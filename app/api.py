@@ -537,6 +537,22 @@ async def telegram_webhook(token: str, update: dict):
                     pass
                 return JSONResponse(status_code=200, content={"ok": True})
 
+
+            # Compatibility endpoints: accept webhook POSTs at the token root path
+            # (e.g. https://host/<BOT_TOKEN>/). Many users set the webhook URL to
+            # the raw bot token path instead of /webhook/<token>. Accept both with and
+            # without trailing slash and forward to the canonical handler.
+            @app.post("/{token}")
+            @app.post("/{token}/")
+            async def telegram_webhook_token_root(token: str, update: dict):
+                # Only handle obvious bot-token-like paths to avoid capturing other routes
+                configured_tokens = [c.get("bot_token") for c in settings.API_CREDENTIALS if c.get("bot_token")]
+                # Accept when token contains a colon (typical bot token format) or matches configured token
+                if ":" not in token and token not in configured_tokens:
+                    return JSONResponse(status_code=404, content={"ok": False, "error": "unknown token"})
+                # Forward to canonical handler
+                return await telegram_webhook(token, update)
+
             # explicit noop callback (used as a page indicator button) should
             # be answered to clear the loading spinner but otherwise ignored.
             if data == "noop":
