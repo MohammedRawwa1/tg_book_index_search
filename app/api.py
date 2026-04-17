@@ -2374,7 +2374,7 @@ async def diag_internal_page_store(request: Request, create: bool | None = Query
             info["page_count"] = len(getattr(store, "pages", {}))
         elif isinstance(store, InternalPageStore):
             info["store_type"] = "InternalPageStore"
-                try:
+            try:
                 db_name = getattr(settings, "TELEGRAPH_DB", "book_db")
                 coll = store.client[db_name].get_collection("telegraph_pages")
                 cnt = await coll.estimated_document_count()
@@ -2857,22 +2857,26 @@ async def admin_get_page(request: Request, page_id: str, token: str | None = Non
         return JSONResponse(status_code=503, content={"ok": False, "error": "DB unavailable"})
 
     try:
-    coll = db.get_collection(getattr(settings, "TELEGRAPH_DB", "book_db")).get_collection("telegraph_pages") if False else db.client[getattr(settings, "TELEGRAPH_DB", "book_db")].get_collection("telegraph_pages")
+        coll = db.client[getattr(settings, "TELEGRAPH_DB", "book_db")].get_collection("telegraph_pages")
         doc = await coll.find_one({"_id": __import__("bson").ObjectId(page_id)})
         if not doc:
             return JSONResponse(status_code=404, content={"ok": False, "error": "not found"})
-        # normalize datetime
+
+        # normalize datetime if present
         try:
-            if isinstance(doc.get("created_at"), __import__("datetime").datetime):
-                doc["created_at"] = doc["created_at"].isoformat()
+            created_at = doc.get("created_at")
+            if isinstance(created_at, __import__("datetime").datetime):
+                doc["created_at"] = created_at.isoformat()
         except Exception:
             pass
+
         # convert ObjectId
         try:
             if "_id" in doc:
                 doc["_id"] = str(doc["_id"])
         except Exception:
             pass
+
         return JSONResponse(status_code=200, content={"ok": True, "page": doc})
     except Exception as exc:
         logger.exception("admin_get_page failed: %s", exc)
