@@ -9,6 +9,25 @@ from app.utils.logger import logger
 
 
 def register_admin_handlers(client: Client, mongo):
+        @client.on_message(filters.command("clear_all"))
+        async def _clear_all(client: Client, message: Message):
+            if not _is_owner(message.from_user.id):
+                await message.reply_text("Unauthorized")
+                return
+
+            kb = InlineKeyboardMarkup(
+                [
+                    [
+                        InlineKeyboardButton("Delete All Indexes (remove documents)", callback_data="C|delete"),
+                        InlineKeyboardButton("Drop Collections (remove collections)", callback_data="C|drop"),
+                    ],
+                    [InlineKeyboardButton("Cancel", callback_data="C|cancel")],
+                ]
+            )
+            await message.reply_text(
+                "Are you sure you want to clear ALL indexed files?\nChoose `Delete` to remove all documents (safer), or `Drop` to drop the collections (faster). This action cannot be undone.",
+                reply_markup=kb,
+            )
     # admin handlers do not need direct file_index instance here
 
     def _is_owner(user_id: int) -> bool:
