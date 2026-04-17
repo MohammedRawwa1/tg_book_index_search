@@ -207,8 +207,16 @@ async def startup():
             pass
         app.state.db = None
 
+    # Determine whether API process should run Telegram clients/backfill
+    run_bots = (os.getenv("RUN_BOT_IN_API", "false").lower() in ("1", "true", "yes"))
+
     # --- Start Pyrogram BotManager so API process can also run Telegram clients ---
-    try:
+    if not run_bots:
+        logger.info("RUN_BOT_IN_API not set/false; skipping BotManager and auto backfill in API process")
+        app.state.bot_manager = None
+        app.state.bot_task = None
+    else:
+        try:
         # SessionStore uses a synchronous MongoService; try to create one for session persistence
         try:
             from app.services.session_store import SessionStore
@@ -272,13 +280,13 @@ async def startup():
                 except Exception:
                     pass
 
-        app.state.bot_manager = bot_mgr
-        try:
-            app.state.bot_task = asyncio.create_task(bot_mgr.start_all())
+            app.state.bot_manager = bot_mgr
+            try:
+                app.state.bot_task = asyncio.create_task(bot_mgr.start_all())
+            except Exception:
+                logger.exception("Failed to start BotManager clients")
         except Exception:
-            logger.exception("Failed to start BotManager clients")
-    except Exception:
-        logger.exception("Failed to initialize BotManager in API startup")
+            logger.exception("Failed to initialize BotManager in API startup")
 
     # Log configured bot tokens (masked) to help diagnose webhook mismatches
     try:
@@ -305,7 +313,8 @@ async def startup():
         pass
 
     # Automatic background backfill worker (optional)
-    if getattr(settings, "BACKFILL_AUTO", False):
+    # Only run backfill when both BACKFILL_AUTO and RUN_BOT_IN_API are enabled
+    if run_bots and getattr(settings, "BACKFILL_AUTO", False):
         # derive chat list
         chat_list = []
         if getattr(settings, "BACKFILL_CHAT_IDS", None):
