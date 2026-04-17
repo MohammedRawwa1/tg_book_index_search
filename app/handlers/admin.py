@@ -5,6 +5,7 @@ import asyncio
 from app.config.settings import settings
 from app.handlers.indexer import backfill_history
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
+from app.utils.logger import logger
 
 
 def register_admin_handlers(client: Client, mongo):
@@ -198,6 +199,27 @@ def register_admin_handlers(client: Client, mongo):
         loop = asyncio.get_running_loop()
         loop.create_task(backfill_history(client, mongo, target_chat_id))
 
+    # --- /clear_all command ---
+    @client.on_message(filters.command("clear_all"))
+    async def _clear_all(client: Client, message: Message):
+        if not _is_owner(message.from_user.id):
+            await message.reply_text("Unauthorized")
+            return
+
+        kb = InlineKeyboardMarkup(
+            [
+                [
+                    InlineKeyboardButton("Delete All Indexes (remove documents)", callback_data="C|delete"),
+                    InlineKeyboardButton("Drop Collections (remove collections)", callback_data="C|drop"),
+                ],
+                [InlineKeyboardButton("Cancel", callback_data="C|cancel")],
+            ]
+        )
+        await message.reply_text(
+            "Are you sure you want to clear ALL indexed files?\nChoose `Delete` to remove all documents (safer), or `Drop` to drop the collections (faster). This action cannot be undone.",
+            reply_markup=kb,
+        )
+
     # --- /admin panel ---
     @client.on_message(filters.command("admin"))
     async def _admin_panel(client: Client, message: Message):
@@ -220,6 +242,78 @@ def register_admin_handlers(client: Client, mongo):
     @client.on_callback_query()
     async def _admin_callback(client: Client, cq: CallbackQuery):
         data = cq.data or ""
+
+        # Confirmation callbacks for clear_all use prefix C|
+        if data.startswith("C|"):
+            if not _is_owner(cq.from_user.id if cq.from_user else None):
+                await cq.answer("Unauthorized", show_alert=True)
+                return
+
+            action = data.split("|", 1)[1]
+            try:
+                if action == "delete":
+                    files_col = mongo.db.get_collection("files")
+                    index_state_col = mongo.db.get_collection("index_state")
+                    res1 = files_col.delete_many({})
+                    res2 = index_state_col.delete_many({})
+                    deleted = getattr(res1, "deleted_count", 0) + getattr(res2, "deleted_count", 0)
+
+                    # clear server cache if present
+                    try:
+                        from app.api import app as main_app
+
+                        cache = getattr(main_app.state, "search_cache", None)
+                        if cache:
+                            try:
+                                await cache.clear()
+                            except Exception:
+                                pass
+                    except Exception:
+                        pass
+
+                    msg = f"Deleted {deleted} documents from indexes."
+                    try:
+                        await cq.message.edit_text(msg)
+                    except Exception:
+                        await cq.message.reply_text(msg)
+                    await cq.answer("Deleted")
+
+                elif action == "drop":
+                    try:
+                        mongo.db.drop_collection("files")
+                        mongo.db.drop_collection("index_state")
+                    except Exception:
+                        pass
+
+                    try:
+                        from app.api import app as main_app
+
+                        cache = getattr(main_app.state, "search_cache", None)
+                        if cache:
+                            try:
+                                await cache.clear()
+                            except Exception:
+                                pass
+                    except Exception:
+                        pass
+
+                    try:
+                        await cq.message.edit_text("Dropped collections `files` and `index_state`.")
+                    except Exception:
+                        await cq.message.reply_text("Dropped collections `files` and `index_state`.")
+                    await cq.answer("Dropped")
+
+                else:
+                    try:
+                        await cq.message.edit_text("Clear cancelled.")
+                    except Exception:
+                        pass
+                    await cq.answer("Cancelled")
+            except Exception as exc:
+                logger.exception("clear_all admin callback failed: %s", exc)
+                await cq.answer("Failed to clear indexes", show_alert=True)
+            return
+
         if not data.startswith("A|"):
             return
 
