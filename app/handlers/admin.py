@@ -79,7 +79,9 @@ def register_admin_handlers(client: Client, mongo):
     # --- /clear_all ---
     @client.on_message(filters.command("clear_all"))
     async def _clear_all(client: Client, message: Message):
+        logger.info("/clear_all command received from user_id=%s chat_id=%s", message.from_user.id if message.from_user else None, message.chat.id if message.chat else None)
         if not _is_owner(message.from_user.id):
+            logger.warning("/clear_all unauthorized access attempt by user_id=%s", message.from_user.id)
             return await message.reply_text("Unauthorized")
 
         kb = InlineKeyboardMarkup(
@@ -92,10 +94,16 @@ def register_admin_handlers(client: Client, mongo):
             ]
         )
 
-        await message.reply_text(
-            "Clear ALL indexed files?\nDelete = safer, Drop = faster.",
-            reply_markup=kb,
-        )
+        logger.info("Sending clear_all confirmation menu to chat_id=%s", message.chat.id if message.chat else None)
+        try:
+            sent = await message.reply_text(
+                "Clear ALL indexed files?\nDelete = safer, Drop = faster.",
+                reply_markup=kb,
+            )
+            logger.info("clear_all confirmation menu sent successfully. message_id=%s", sent.message_id if sent else None)
+        except Exception as e:
+            logger.exception("Failed to send clear_all confirmation menu: %s", e)
+            await message.reply_text("Error sending confirmation menu. Check logs.")
 
     # --- /admin ---
     @client.on_message(filters.command("admin"))
