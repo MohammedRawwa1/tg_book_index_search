@@ -1,6 +1,7 @@
 from fastapi import FastAPI, Query, HTTPException, Request
 from fastapi.responses import JSONResponse, FileResponse, PlainTextResponse, StreamingResponse, HTMLResponse
 import json
+import urllib.parse
 from fastapi.staticfiles import StaticFiles
 import os
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -552,6 +553,41 @@ async def telegram_webhook(token: str, update: dict):
                     return JSONResponse(status_code=404, content={"ok": False, "error": "unknown token"})
                 # Forward to canonical handler
                 return await telegram_webhook(token, update)
+
+
+            # Fallback: catch any POST and attempt to extract a bot token from the raw path
+            # This helps with percent-encoded tokens (e.g. colon encoded as %3A) or unusual
+            # gateway rewrites where the token path isn't matched by the explicit route.
+            @app.post("/{full_path:path}")
+            async def telegram_webhook_fallback(full_path: str, request: Request):
+                raw = request.scope.get("raw_path")
+                if raw:
+                    try:
+                        # raw_path is bytes; decode using latin-1 to preserve byte values
+                        raw_path = raw.decode("latin-1")
+                    except Exception:
+                        raw_path = request.url.path
+                else:
+                    raw_path = request.url.path
+
+                # split segments and inspect each for a bot token-looking value
+                segments = [s for s in raw_path.strip("/").split("/") if s]
+                configured_tokens = [c.get("bot_token") for c in settings.API_CREDENTIALS if c.get("bot_token")]
+
+                for seg in reversed(segments):
+                    seg_dec = urllib.parse.unquote(seg)
+                    if ":" in seg_dec or seg_dec in configured_tokens:
+                        try:
+                            body = await request.json()
+                        except Exception:
+                            try:
+                                raw_body = await request.body()
+                                body = json.loads(raw_body.decode("utf-8", errors="ignore") if isinstance(raw_body, (bytes, bytearray)) else raw_body)
+                            except Exception:
+                                body = {}
+                        return await telegram_webhook(seg_dec, body)
+
+                return JSONResponse(status_code=404, content={"ok": False, "error": "unknown token"})
 
             # explicit noop callback (used as a page indicator button) should
             # be answered to clear the loading spinner but otherwise ignored.
