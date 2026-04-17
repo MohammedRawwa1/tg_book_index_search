@@ -217,68 +217,68 @@ async def startup():
         app.state.bot_task = None
     else:
         try:
-        # SessionStore uses a synchronous MongoService; try to create one for session persistence
-        try:
-            from app.services.session_store import SessionStore
-
-            sync_mongo = None
+            # SessionStore uses a synchronous MongoService; try to create one for session persistence
             try:
-                sync_mongo = MongoService(settings.MONGO_URI, settings.DB_NAME, settings.MONGO_CONNECT_TIMEOUT_MS)
-                sync_mongo.connect()
-            except Exception:
+                from app.services.session_store import SessionStore
+
                 sync_mongo = None
+                try:
+                    sync_mongo = MongoService(settings.MONGO_URI, settings.DB_NAME, settings.MONGO_CONNECT_TIMEOUT_MS)
+                    sync_mongo.connect()
+                except Exception:
+                    sync_mongo = None
 
-            try:
-                session_store = SessionStore(sync_mongo) if sync_mongo is not None else None
+                try:
+                    session_store = SessionStore(sync_mongo) if sync_mongo is not None else None
+                except Exception:
+                    session_store = None
             except Exception:
                 session_store = None
-        except Exception:
-            session_store = None
 
-        from app.bot import BotManager
+            from app.bot import BotManager
 
-        bot_mgr = BotManager(settings.API_CREDENTIALS, session_store=session_store)
+            bot_mgr = BotManager(settings.API_CREDENTIALS, session_store=session_store)
 
-        # Register handlers on each client
-        if bot_mgr.clients:
-            try:
-                from app.handlers.indexer import register_indexer
-            except Exception:
-                register_indexer = None
-            try:
-                from app.handlers.search import register_search_handlers
-            except Exception:
-                register_search_handlers = None
-
-            for client in bot_mgr.clients:
-                # attach a sync MongoService to the client for handler convenience
+            # Register handlers on each client
+            if bot_mgr.clients:
                 try:
-                    sync_ms = MongoService(settings.MONGO_URI, settings.DB_NAME, settings.MONGO_CONNECT_TIMEOUT_MS)
-                    sync_ms.connect()
-                    setattr(client, "_mongo", sync_ms)
+                    from app.handlers.indexer import register_indexer
+                except Exception:
+                    register_indexer = None
+                try:
+                    from app.handlers.search import register_search_handlers
+                except Exception:
+                    register_search_handlers = None
+
+                for client in bot_mgr.clients:
+                    # attach a sync MongoService to the client for handler convenience
                     try:
-                        setattr(client, "_bot_db", sync_ms.db)
+                        sync_ms = MongoService(settings.MONGO_URI, settings.DB_NAME, settings.MONGO_CONNECT_TIMEOUT_MS)
+                        sync_ms.connect()
+                        setattr(client, "_mongo", sync_ms)
+                        try:
+                            setattr(client, "_bot_db", sync_ms.db)
+                        except Exception:
+                            setattr(client, "_bot_db", None)
                     except Exception:
+                        setattr(client, "_mongo", None)
                         setattr(client, "_bot_db", None)
-                except Exception:
-                    setattr(client, "_mongo", None)
-                    setattr(client, "_bot_db", None)
 
-                try:
-                    if register_indexer:
-                        register_indexer(client, getattr(client, "_mongo", None))
-                except Exception:
-                    pass
-                try:
-                    if register_search_handlers:
-                        register_search_handlers(client, getattr(client, "_mongo", None))
-                except Exception:
-                    pass
-                try:
-                    from app.handlers.admin import register_admin_handlers
-                    register_admin_handlers(client, getattr(client, "_mongo", None))
-                except Exception:
-                    pass
+                    try:
+                        if register_indexer:
+                            register_indexer(client, getattr(client, "_mongo", None))
+                    except Exception:
+                        pass
+                    try:
+                        if register_search_handlers:
+                            register_search_handlers(client, getattr(client, "_mongo", None))
+                    except Exception:
+                        pass
+                    try:
+                        from app.handlers.admin import register_admin_handlers
+                        register_admin_handlers(client, getattr(client, "_mongo", None))
+                    except Exception:
+                        pass
 
             app.state.bot_manager = bot_mgr
             try:
