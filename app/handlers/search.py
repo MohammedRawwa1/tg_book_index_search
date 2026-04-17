@@ -548,9 +548,20 @@ def register_search_handlers(client: Client, mongo):
     # 📄 CALLBACK HANDLER
     # -------------------------------
     @client.on_callback_query()
-    async def callbacks(client: Client, cq: CallbackQuery):
+    async def merged_callback_handler(client: Client, cq: CallbackQuery):
         data = cq.data or ""
 
+        # Admin callbacks (C| and A|)
+        if data.startswith("C|") or data.startswith("A|"):
+            try:
+                from app.handlers.admin import handle_admin_callback
+                await handle_admin_callback(client, cq)
+            except Exception as exc:
+                logger.exception("admin callback dispatch failed: %s", exc)
+                await cq.answer("Admin callback error", show_alert=True)
+            return
+
+        # Search internal page navigation (IP|)
         if data.startswith("IP|"):
             page_id = data.split("|", 1)[1]
             store = getattr(client, "_internal_page_store", None)
@@ -572,3 +583,7 @@ def register_search_handlers(client: Client, mongo):
                 parse_mode="Markdown"
             )
             await cq.answer()
+            return
+
+        # Unknown callback
+        await cq.answer("Unknown callback", show_alert=True)

@@ -239,125 +239,125 @@ def register_admin_handlers(client: Client, mongo):
         await message.reply_text("Admin panel", reply_markup=kb)
 
     # --- Callback handler ---
-    @client.on_callback_query()
-    async def _admin_callback(client: Client, cq: CallbackQuery):
-        data = cq.data or ""
+def handle_admin_callback(client: Client, cq: CallbackQuery):
+    """Standalone handler for admin callback queries (C| and A| prefixes). To be called from a merged callback dispatcher."""
+    import asyncio
+    from app.config.settings import settings
+    from app.handlers.indexer import backfill_history
+    from app.utils.logger import logger
+    mongo = getattr(client, "_mongo", None)
+    def _is_owner(user_id):
+        return settings.OWNER_ID is not None and user_id is not None and int(user_id) == int(settings.OWNER_ID)
 
-        # Confirmation callbacks for clear_all use prefix C|
-        if data.startswith("C|"):
-            if not _is_owner(cq.from_user.id if cq.from_user else None):
-                await cq.answer("Unauthorized", show_alert=True)
-                return
-
-            action = data.split("|", 1)[1]
-            try:
-                if action == "delete":
-                    files_col = mongo.db.get_collection("files")
-                    index_state_col = mongo.db.get_collection("index_state")
-                    res1 = files_col.delete_many({})
-                    res2 = index_state_col.delete_many({})
-                    deleted = getattr(res1, "deleted_count", 0) + getattr(res2, "deleted_count", 0)
-
-                    # clear server cache if present
-                    try:
-                        from app.api import app as main_app
-
-                        cache = getattr(main_app.state, "search_cache", None)
-                        if cache:
-                            try:
-                                await cache.clear()
-                            except Exception:
-                                pass
-                    except Exception:
-                        pass
-
-                    msg = f"Deleted {deleted} documents from indexes."
-                    try:
-                        await cq.message.edit_text(msg)
-                    except Exception:
-                        await cq.message.reply_text(msg)
-                    await cq.answer("Deleted")
-
-                elif action == "drop":
-                    try:
-                        mongo.db.drop_collection("files")
-                        mongo.db.drop_collection("index_state")
-                    except Exception:
-                        pass
-
-                    try:
-                        from app.api import app as main_app
-
-                        cache = getattr(main_app.state, "search_cache", None)
-                        if cache:
-                            try:
-                                await cache.clear()
-                            except Exception:
-                                pass
-                    except Exception:
-                        pass
-
-                    try:
-                        await cq.message.edit_text("Dropped collections `files` and `index_state`.")
-                    except Exception:
-                        await cq.message.reply_text("Dropped collections `files` and `index_state`.")
-                    await cq.answer("Dropped")
-
-                else:
-                    try:
-                        await cq.message.edit_text("Clear cancelled.")
-                    except Exception:
-                        pass
-                    await cq.answer("Cancelled")
-            except Exception as exc:
-                logger.exception("clear_all admin callback failed: %s", exc)
-                await cq.answer("Failed to clear indexes", show_alert=True)
-            return
-
-        if not data.startswith("A|"):
-            return
-
+    data = cq.data or ""
+    # Confirmation callbacks for clear_all use prefix C|
+    if data.startswith("C|"):
         if not _is_owner(cq.from_user.id if cq.from_user else None):
-            await cq.answer("Unauthorized", show_alert=True)
-            return
+            return cq.answer("Unauthorized", show_alert=True)
 
-        cmd = data.split("|")[1]
-        target_chat = settings.TARGET_CHAT_ID or settings.OWNER_ID
-        if target_chat:
-            target_chat = int(target_chat)
-
-        admin_tasks = getattr(client, "_admin_tasks")
-
-        if cmd == "start":
-            if not target_chat:
-                await cq.answer("No target chat configured", show_alert=True)
-                return
-            task = admin_tasks.get(target_chat)
-            if task and not task.done():
-                await cq.answer("Backfill already running", show_alert=True)
-                return
-            loop = asyncio.get_running_loop()
-            task = loop.create_task(backfill_history(client, mongo, target_chat))
-            admin_tasks[target_chat] = task
-            await cq.answer("Backfill started")
-
-        elif cmd == "stop":
-            task = admin_tasks.get(target_chat)
-            if not task:
-                await cq.answer("No running backfill", show_alert=True)
-                return
-            task.cancel()
-            await cq.answer("Backfill cancelled")
-
-        elif cmd == "stats":
-            try:
+        action = data.split("|", 1)[1]
+        try:
+            if action == "delete":
                 files_col = mongo.db.get_collection("files")
-                total_files = files_col.count_documents({})
-                duplicates = files_col.count_documents({"is_duplicate": True})
-                await cq.message.reply_text(f"Total files: {total_files}\nDuplicates: {duplicates}")
-                await cq.answer()
-            except Exception:
-                await cq.answer("Failed to fetch stats", show_alert=True)
+                index_state_col = mongo.db.get_collection("index_state")
+                res1 = files_col.delete_many({})
+                res2 = index_state_col.delete_many({})
+                deleted = getattr(res1, "deleted_count", 0) + getattr(res2, "deleted_count", 0)
 
-        else:
+                # clear server cache if present
+                try:
+                    from app.api import app as main_app
+                    cache = getattr(main_app.state, "search_cache", None)
+                    if cache:
+                        try:
+                            await cache.clear()
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+
+                msg = f"Deleted {deleted} documents from indexes."
+                try:
+                    await cq.message.edit_text(msg)
+                except Exception:
+                    await cq.message.reply_text(msg)
+                await cq.answer("Deleted")
+
+            elif action == "drop":
+                try:
+                    mongo.db.drop_collection("files")
+                    mongo.db.drop_collection("index_state")
+                except Exception:
+                    pass
+
+                try:
+                    from app.api import app as main_app
+                    cache = getattr(main_app.state, "search_cache", None)
+                    if cache:
+                        try:
+                            await cache.clear()
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+
+                try:
+                    await cq.message.edit_text("Dropped collections `files` and `index_state`.")
+                except Exception:
+                    await cq.message.reply_text("Dropped collections `files` and `index_state`.")
+                await cq.answer("Dropped")
+
+            else:
+                try:
+                    await cq.message.edit_text("Clear cancelled.")
+                except Exception:
+                    pass
+                await cq.answer("Cancelled")
+        except Exception as exc:
+            logger.exception("clear_all admin callback failed: %s", exc)
+            await cq.answer("Failed to clear indexes", show_alert=True)
+        return
+
+    if not data.startswith("A|"):
+        return
+
+    if not _is_owner(cq.from_user.id if cq.from_user else None):
+        return await cq.answer("Unauthorized", show_alert=True)
+
+    cmd = data.split("|")[1]
+    target_chat = settings.TARGET_CHAT_ID or settings.OWNER_ID
+    if target_chat:
+        target_chat = int(target_chat)
+
+    admin_tasks = getattr(client, "_admin_tasks", {})
+
+    if cmd == "start":
+        if not target_chat:
+            return await cq.answer("No target chat configured", show_alert=True)
+        task = admin_tasks.get(target_chat)
+        if task and not task.done():
+            return await cq.answer("Backfill already running", show_alert=True)
+        loop = asyncio.get_running_loop()
+        task = loop.create_task(backfill_history(client, mongo, target_chat))
+        admin_tasks[target_chat] = task
+        await cq.answer("Backfill started")
+
+    elif cmd == "stop":
+        task = admin_tasks.get(target_chat)
+        if not task:
+            return await cq.answer("No running backfill", show_alert=True)
+        task.cancel()
+        await cq.answer("Backfill cancelled")
+
+    elif cmd == "stats":
+        try:
+            files_col = mongo.db.get_collection("files")
+            total_files = files_col.count_documents({})
+            duplicates = files_col.count_documents({"is_duplicate": True})
+            await cq.message.reply_text(f"Total files: {total_files}\nDuplicates: {duplicates}")
             await cq.answer()
+        except Exception:
+            await cq.answer("Failed to fetch stats", show_alert=True)
+
+    else:
+        await cq.answer()
