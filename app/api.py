@@ -622,8 +622,126 @@ async def telegram_webhook(token: str, update: dict):
                     pass
                 return JSONResponse(status_code=200, content={"ok": True})
 
-            # support internal page navigation callbacks like "IP|<page_id>"
-            if data.startswith("IP|"):
+            # Admin callbacks: handle clear_all actions from inline buttons
+            # e.g. C|delete, C|drop, C|cancel
+            if data.startswith("C|"):
+                action = data.split("|", 1)[1]
+                # owner check
+                try:
+                    from_id = cq.get("from", {}).get("id")
+                    owner = getattr(settings, "OWNER_ID", None)
+                    if owner and int(from_id) != int(owner):
+                        try:
+                            await _answer_callback(token, cq.get("id"), text="Unauthorized", show_alert=True)
+                        except Exception:
+                            pass
+                        return JSONResponse(status_code=200, content={"ok": True})
+                except Exception:
+                    pass
+
+                try:
+                    db = getattr(app.state, "db", None)
+                    msg = cq.get("message")
+                    # perform DB action
+                    if action == "delete":
+                        if db is not None:
+                            try:
+                                await db.get_collection("files").delete_many({})
+                                await db.get_collection("index_state").delete_many({})
+                            except Exception:
+                                logger.exception("API clear_all: delete operation failed")
+                        # edit original message to show result
+                        edit_url = f"https://api.telegram.org/bot{token}/editMessageText"
+                        payload = {"text": "Documents deleted."}
+                        if msg and msg.get("chat"):
+                            payload["chat_id"] = msg.get("chat", {}).get("id")
+                            payload["message_id"] = msg.get("message_id")
+                        else:
+                            imid = cq.get("inline_message_id")
+                            if imid:
+                                payload["inline_message_id"] = imid
+                        try:
+                            async with httpx.AsyncClient() as client:
+                                resp = await client.post(edit_url, json=payload, timeout=10)
+                                try:
+                                    logger.info("admin C|delete edit response: status=%s body=%s", resp.status_code, (resp.text or "")[:400])
+                                except Exception:
+                                    pass
+                        except Exception:
+                            logger.exception("admin C|delete: editMessageText failed")
+                        try:
+                            await _answer_callback(token, cq.get("id"), text="Deleted")
+                        except Exception:
+                            pass
+
+                    elif action == "drop":
+                        if db is not None:
+                            try:
+                                # drop collections (best-effort)
+                                try:
+                                    await db.drop_collection("files")
+                                except Exception:
+                                    pass
+                                try:
+                                    await db.drop_collection("index_state")
+                                except Exception:
+                                    pass
+                            except Exception:
+                                logger.exception("API clear_all: drop operation failed")
+                        edit_url = f"https://api.telegram.org/bot{token}/editMessageText"
+                        payload = {"text": "Collections dropped."}
+                        if msg and msg.get("chat"):
+                            payload["chat_id"] = msg.get("chat", {}).get("id")
+                            payload["message_id"] = msg.get("message_id")
+                        else:
+                            imid = cq.get("inline_message_id")
+                            if imid:
+                                payload["inline_message_id"] = imid
+                        try:
+                            async with httpx.AsyncClient() as client:
+                                resp = await client.post(edit_url, json=payload, timeout=10)
+                                try:
+                                    logger.info("admin C|drop edit response: status=%s body=%s", resp.status_code, (resp.text or "")[:400])
+                                except Exception:
+                                    pass
+                        except Exception:
+                            logger.exception("admin C|drop: editMessageText failed")
+                        try:
+                            await _answer_callback(token, cq.get("id"), text="Dropped")
+                        except Exception:
+                            pass
+
+                    else:
+                        # cancel
+                        edit_url = f"https://api.telegram.org/bot{token}/editMessageText"
+                        payload = {"text": "Cancelled."}
+                        if msg and msg.get("chat"):
+                            payload["chat_id"] = msg.get("chat", {}).get("id")
+                            payload["message_id"] = msg.get("message_id")
+                        else:
+                            imid = cq.get("inline_message_id")
+                            if imid:
+                                payload["inline_message_id"] = imid
+                        try:
+                            async with httpx.AsyncClient() as client:
+                                resp = await client.post(edit_url, json=payload, timeout=10)
+                                try:
+                                    logger.info("admin C|cancel edit response: status=%s body=%s", resp.status_code, (resp.text or "")[:400])
+                                except Exception:
+                                    pass
+                        except Exception:
+                            logger.exception("admin C|cancel: editMessageText failed")
+                        try:
+                            await _answer_callback(token, cq.get("id"), text="Cancelled")
+                        except Exception:
+                            pass
+                except Exception as e:
+                    logger.exception("API clear failed: %s", e)
+                    try:
+                        await _answer_callback(token, cq.get("id"), text="Error", show_alert=True)
+                    except Exception:
+                        pass
+                return JSONResponse(status_code=200, content={"ok": True})
                 page_id = data.split("|", 1)[1]
                 try:
                     store = _ensure_internal_page_store()
@@ -1000,6 +1118,28 @@ async def telegram_webhook(token: str, update: dict):
                     await _send_tg(token, int(owner), f"Failed to schedule reindex for {target}: {exc}")
             except Exception:
                 pass
+
+    if cmd == "/clear_all":
+        # Only allow OWNER to trigger clear all
+        try:
+            owner = getattr(settings, "OWNER_ID", None)
+            if owner and int(owner) != int(chat_id):
+                await _send_tg(token, chat_id, "Unauthorized")
+                return {"ok": True}
+        except Exception:
+            pass
+
+        kb = [
+            [
+                {"text": "Delete", "callback_data": "C|delete"},
+                {"text": "Drop", "callback_data": "C|drop"},
+            ],
+            [{"text": "Cancel", "callback_data": "C|cancel"}],
+        ]
+        try:
+            await _send_tg(token, chat_id, "Clear ALL indexed files?\nDelete = safer, Drop = faster.", reply_markup=kb)
+        except Exception:
+            logger.exception("Failed to send clear_all confirmation from API webhook")
         return {"ok": True}
 
         chat = message.get("chat") or {}
