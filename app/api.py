@@ -280,6 +280,30 @@ async def startup():
     except Exception:
         logger.exception("Failed to initialize BotManager in API startup")
 
+    # Log configured bot tokens (masked) to help diagnose webhook mismatches
+    try:
+        token_list = []
+        env_bot = os.getenv("BOT_TOKEN") or os.getenv("TELEGRAM_BOT_TOKEN")
+        if env_bot:
+            token_list.append(env_bot)
+        for c in getattr(settings, "API_CREDENTIALS", []):
+            t = c.get("bot_token")
+            if t:
+                token_list.append(t)
+        masked = []
+        for t in token_list:
+            try:
+                if len(t) > 8:
+                    masked.append(f"{t[:4]}...{t[-4:]}")
+                else:
+                    masked.append(t)
+            except Exception:
+                continue
+        if masked:
+            logger.info("Configured bot tokens (masked): %s", ", ".join(masked))
+    except Exception:
+        pass
+
     # Automatic background backfill worker (optional)
     if getattr(settings, "BACKFILL_AUTO", False):
         # derive chat list
