@@ -1,149 +1,3 @@
-from pyrogram import Client, filters
-from pyrogram.types import Message
-import asyncio
-
-from app.config.settings import settings
-from app.handlers.indexer import backfill_history
-from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
-from app.utils.logger import logger
-
-
-def register_admin_handlers(client: Client, mongo):
-        @client.on_message(filters.command("clear_all"))
-        async def _clear_all(client: Client, message: Message):
-            if not _is_owner(message.from_user.id):
-                await message.reply_text("Unauthorized")
-                return
-
-            kb = InlineKeyboardMarkup(
-                [
-                    [
-                        InlineKeyboardButton("Delete All Indexes (remove documents)", callback_data="C|delete"),
-                        InlineKeyboardButton("Drop Collections (remove collections)", callback_data="C|drop"),
-                    ],
-                    [InlineKeyboardButton("Cancel", callback_data="C|cancel")],
-                ]
-            )
-            await message.reply_text(
-                "Are you sure you want to clear ALL indexed files?\nChoose `Delete` to remove all documents (safer), or `Drop` to drop the collections (faster). This action cannot be undone.",
-                reply_markup=kb,
-            )
-    # admin handlers do not need direct file_index instance here
-
-    def _is_owner(user_id: int) -> bool:
-        return settings.OWNER_ID is not None and int(user_id) == int(settings.OWNER_ID)
-
-    @client.on_message(filters.command("stats"))
-    async def _stats(client: Client, message: Message):
-        if not _is_owner(message.from_user.id):
-            await message.reply_text("Unauthorized")
-            return
-        total = mongo.db.get_collection("files").count_documents({})
-        dups = mongo.db.get_collection("files").count_documents({"is_duplicate": True})
-        state = mongo.db.get_collection("index_state").find_one({}) or {}
-        last = state.get("last_message_id") if state else None
-        await message.reply_text(f"Total files: {total}\nDuplicates: {dups}\nLast indexed (sample): {last}")
-
-    @client.on_message(filters.command("health"))
-    async def _health(client: Client, message: Message):
-        if not _is_owner(message.from_user.id):
-            await message.reply_text("Unauthorized")
-            return
-        try:
-            # ping mongo
-            mongo.client.admin.command('ping')
-            await message.reply_text("OK: MongoDB reachable")
-        except Exception:
-            await message.reply_text("ERROR: MongoDB ping failed")
-
-    @client.on_message(filters.command("reindex"))
-    async def _reindex(client: Client, message: Message):
-        if not _is_owner(message.from_user.id):
-            await message.reply_text("Unauthorized")
-            return
-        args = message.text.split(maxsplit=1)
-        if len(args) == 1:
-            await message.reply_text("Usage: /reindex <chat_id>\nExample: /reindex -1001234567890")
-            return
-        target = args[1].strip()
-        try:
-            target_chat_id = int(target)
-        except Exception:
-            await message.reply_text("Invalid chat id")
-            return
-
-        # start background backfill from last index (resumable)
-        await message.reply_text(f"Starting backfill for {target_chat_id} (background)")
-        loop = asyncio.get_event_loop()
-        loop.create_task(backfill_history(client, mongo, target_chat_id))
-
-    @client.on_message(filters.command("admin"))
-    async def _admin_panel(client: Client, message: Message):
-        # owner only
-        if not _is_owner(message.from_user.id):
-            await message.reply_text("Unauthorized")
-            return
-        kb = InlineKeyboardMarkup(
-            [
-                [
-                    InlineKeyboardButton("Start Backfill", callback_data="A|start"),
-                    InlineKeyboardButton("Stop Backfill", callback_data="A|stop"),
-                ],
-                [InlineKeyboardButton("Stats", callback_data="A|stats")],
-            ]
-        )
-        await message.reply_text("Admin panel", reply_markup=kb)
-
-    @client.on_callback_query()
-    async def _admin_callback(client: Client, cq: CallbackQuery):
-        data = cq.data or ""
-        if not data or not data.startswith("A|"):
-            return
-        if not cq.from_user or not _is_owner(cq.from_user.id):
-            await cq.answer("Unauthorized", show_alert=True)
-            return
-        parts = data.split("|", 2)
-        cmd = parts[1]
-        # target chat: use settings.TARGET_CHAT_ID if available
-        target = settings.TARGET_CHAT_ID or settings.OWNER_ID
-
-        # ensure client._admin_tasks exists
-        if not hasattr(client, "_admin_tasks"):
-            client._admin_tasks = {}
-
-        if cmd == "start":
-            if not target:
-                await cq.answer("No target chat configured", show_alert=True)
-                return
-            if target in client._admin_tasks and not client._admin_tasks[target].done():
-                await cq.answer("Backfill already running", show_alert=True)
-                return
-            loop = asyncio.get_event_loop()
-            task = loop.create_task(backfill_history(client, mongo, int(target)))
-            client._admin_tasks[int(target)] = task
-            await cq.answer("Backfill started")
-        elif cmd == "stop":
-            if not target or int(target) not in getattr(client, "_admin_tasks", {}):
-                await cq.answer("No backfill task found", show_alert=True)
-                return
-            task = client._admin_tasks.get(int(target))
-            if task and not task.done():
-                task.cancel()
-                await cq.answer("Backfill cancelled")
-            else:
-                await cq.answer("No running backfill")
-        elif cmd == "stats":
-            try:
-                total = mongo.db.get_collection("files").count_documents({})
-                dups = mongo.db.get_collection("files").count_documents({"is_duplicate": True})
-                await cq.message.reply_text(f"Total files: {total}\nDuplicates: {dups}")
-                await cq.answer()
-            except Exception:
-                await cq.answer("Failed to fetch stats", show_alert=True)
-        else:
-            await cq.answer()
-"""Admin command handlers: stats, health check, reindex, admin panel."""
-
 import asyncio
 from typing import Optional
 
@@ -152,231 +6,196 @@ from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, 
 
 from app.config.settings import settings
 from app.handlers.indexer import backfill_history
+from app.utils.logger import logger
 
 
 def register_admin_handlers(client: Client, mongo):
     """
-    Registers owner-only admin commands:
-    /stats, /health, /reindex, /admin panel, and associated callbacks.
+    Registers owner-only admin commands.
     """
 
     def _is_owner(user_id: Optional[int]) -> bool:
-        return settings.OWNER_ID is not None and user_id is not None and int(user_id) == int(settings.OWNER_ID)
+        return (
+            settings.OWNER_ID is not None
+            and user_id is not None
+            and int(user_id) == int(settings.OWNER_ID)
+        )
 
-    # Ensure admin tasks storage
+    # Ensure admin task storage
     if not hasattr(client, "_admin_tasks"):
-        setattr(client, "_admin_tasks", {})
+        client._admin_tasks = {}
 
-    # --- /stats command ---
+    # --- /stats ---
     @client.on_message(filters.command("stats"))
     async def _stats(client: Client, message: Message):
         if not _is_owner(message.from_user.id):
-            await message.reply_text("Unauthorized")
-            return
+            return await message.reply_text("Unauthorized")
 
         files_col = mongo.db.get_collection("files")
-        index_state = mongo.db.get_collection("index_state").find_one({}) or {}
-        total_files = files_col.count_documents({})
-        duplicates = files_col.count_documents({"is_duplicate": True})
-        last_msg = index_state.get("last_message_id", "N/A")
+        state = mongo.db.get_collection("index_state").find_one({}) or {}
+
+        total = files_col.count_documents({})
+        dups = files_col.count_documents({"is_duplicate": True})
+        last = state.get("last_message_id", "N/A")
 
         await message.reply_text(
-            f"Total files: {total_files}\nDuplicates: {duplicates}\nLast indexed (sample): {last_msg}"
+            f"Total files: {total}\nDuplicates: {dups}\nLast indexed: {last}"
         )
 
-    # --- /health command ---
+    # --- /health ---
     @client.on_message(filters.command("health"))
     async def _health(client: Client, message: Message):
         if not _is_owner(message.from_user.id):
-            await message.reply_text("Unauthorized")
-            return
+            return await message.reply_text("Unauthorized")
+
         try:
             mongo.client.admin.command("ping")
             await message.reply_text("OK: MongoDB reachable")
         except Exception:
             await message.reply_text("ERROR: MongoDB ping failed")
 
-    # --- /reindex command ---
+    # --- /reindex ---
     @client.on_message(filters.command("reindex"))
     async def _reindex(client: Client, message: Message):
         if not _is_owner(message.from_user.id):
-            await message.reply_text("Unauthorized")
-            return
+            return await message.reply_text("Unauthorized")
 
         args = message.text.split(maxsplit=1)
         if len(args) == 1:
-            await message.reply_text("Usage: /reindex <chat_id>\nExample: /reindex -1001234567890")
-            return
+            return await message.reply_text(
+                "Usage: /reindex <chat_id>\nExample: /reindex -1001234567890"
+            )
 
         try:
             target_chat_id = int(args[1].strip())
         except Exception:
-            await message.reply_text("Invalid chat ID")
-            return
+            return await message.reply_text("Invalid chat ID")
 
-        await message.reply_text(f"Starting backfill for {target_chat_id} (background)")
-        loop = asyncio.get_running_loop()
-        loop.create_task(backfill_history(client, mongo, target_chat_id))
+        await message.reply_text(f"Starting backfill for {target_chat_id}")
+        asyncio.get_running_loop().create_task(
+            backfill_history(client, mongo, target_chat_id)
+        )
 
-    # --- /clear_all command ---
+    # --- /clear_all ---
     @client.on_message(filters.command("clear_all"))
     async def _clear_all(client: Client, message: Message):
         if not _is_owner(message.from_user.id):
-            await message.reply_text("Unauthorized")
-            return
+            return await message.reply_text("Unauthorized")
 
         kb = InlineKeyboardMarkup(
             [
                 [
-                    InlineKeyboardButton("Delete All Indexes (remove documents)", callback_data="C|delete"),
-                    InlineKeyboardButton("Drop Collections (remove collections)", callback_data="C|drop"),
+                    InlineKeyboardButton("Delete", callback_data="C|delete"),
+                    InlineKeyboardButton("Drop", callback_data="C|drop"),
                 ],
                 [InlineKeyboardButton("Cancel", callback_data="C|cancel")],
             ]
         )
+
         await message.reply_text(
-            "Are you sure you want to clear ALL indexed files?\nChoose `Delete` to remove all documents (safer), or `Drop` to drop the collections (faster). This action cannot be undone.",
+            "Clear ALL indexed files?\nDelete = safer, Drop = faster.",
             reply_markup=kb,
         )
 
-    # --- /admin panel ---
+    # --- /admin ---
     @client.on_message(filters.command("admin"))
     async def _admin_panel(client: Client, message: Message):
         if not _is_owner(message.from_user.id):
-            await message.reply_text("Unauthorized")
-            return
+            return await message.reply_text("Unauthorized")
 
         kb = InlineKeyboardMarkup(
             [
                 [
-                    InlineKeyboardButton("Start Backfill", callback_data="A|start"),
-                    InlineKeyboardButton("Stop Backfill", callback_data="A|stop"),
+                    InlineKeyboardButton("Start", callback_data="A|start"),
+                    InlineKeyboardButton("Stop", callback_data="A|stop"),
                 ],
                 [InlineKeyboardButton("Stats", callback_data="A|stats")],
             ]
         )
+
         await message.reply_text("Admin panel", reply_markup=kb)
 
-    # --- Callback handler ---
+
+# --- CALLBACK HANDLER (OUTSIDE, not indented!) ---
 async def handle_admin_callback(client: Client, cq: CallbackQuery):
-    """Standalone handler for admin callback queries (C| and A| prefixes). To be called from a merged callback dispatcher."""
-    import asyncio
-    from app.config.settings import settings
-    from app.handlers.indexer import backfill_history
-    from app.utils.logger import logger
     mongo = getattr(client, "_mongo", None)
+
     def _is_owner(user_id):
-        return settings.OWNER_ID is not None and user_id is not None and int(user_id) == int(settings.OWNER_ID)
+        return (
+            settings.OWNER_ID is not None
+            and user_id is not None
+            and int(user_id) == int(settings.OWNER_ID)
+        )
 
     data = cq.data or ""
-    # Confirmation callbacks for clear_all use prefix C|
-    if data.startswith("C|"):
-        if not _is_owner(cq.from_user.id if cq.from_user else None):
-            return cq.answer("Unauthorized", show_alert=True)
-
-        action = data.split("|", 1)[1]
-        try:
-            if action == "delete":
-                files_col = mongo.db.get_collection("files")
-                index_state_col = mongo.db.get_collection("index_state")
-                res1 = files_col.delete_many({})
-                res2 = index_state_col.delete_many({})
-                deleted = getattr(res1, "deleted_count", 0) + getattr(res2, "deleted_count", 0)
-
-                # clear server cache if present
-                try:
-                    from app.api import app as main_app
-                    cache = getattr(main_app.state, "search_cache", None)
-                    if cache:
-                        try:
-                            await cache.clear()
-                        except Exception:
-                            pass
-                except Exception:
-                    pass
-
-                msg = f"Deleted {deleted} documents from indexes."
-                try:
-                    await cq.message.edit_text(msg)
-                except Exception:
-                    await cq.message.reply_text(msg)
-                await cq.answer("Deleted")
-
-            elif action == "drop":
-                try:
-                    mongo.db.drop_collection("files")
-                    mongo.db.drop_collection("index_state")
-                except Exception:
-                    pass
-
-                try:
-                    from app.api import app as main_app
-                    cache = getattr(main_app.state, "search_cache", None)
-                    if cache:
-                        try:
-                            await cache.clear()
-                        except Exception:
-                            pass
-                except Exception:
-                    pass
-
-                try:
-                    await cq.message.edit_text("Dropped collections `files` and `index_state`.")
-                except Exception:
-                    await cq.message.reply_text("Dropped collections `files` and `index_state`.")
-                await cq.answer("Dropped")
-
-            else:
-                try:
-                    await cq.message.edit_text("Clear cancelled.")
-                except Exception:
-                    pass
-                await cq.answer("Cancelled")
-        except Exception as exc:
-            logger.exception("clear_all admin callback failed: %s", exc)
-            await cq.answer("Failed to clear indexes", show_alert=True)
-        return
-
-    if not data.startswith("A|"):
-        return
 
     if not _is_owner(cq.from_user.id if cq.from_user else None):
         return await cq.answer("Unauthorized", show_alert=True)
 
-    cmd = data.split("|")[1]
-    target_chat = settings.TARGET_CHAT_ID or settings.OWNER_ID
-    if target_chat:
-        target_chat = int(target_chat)
+    # --- CLEAR ACTIONS ---
+    if data.startswith("C|"):
+        action = data.split("|")[1]
 
-    admin_tasks = getattr(client, "_admin_tasks", {})
+        try:
+            if action == "delete":
+                mongo.db.get_collection("files").delete_many({})
+                mongo.db.get_collection("index_state").delete_many({})
+                await cq.message.edit_text("Documents deleted.")
+                await cq.answer("Deleted")
+
+            elif action == "drop":
+                mongo.db.drop_collection("files")
+                mongo.db.drop_collection("index_state")
+                await cq.message.edit_text("Collections dropped.")
+                await cq.answer("Dropped")
+
+            else:
+                await cq.message.edit_text("Cancelled.")
+                await cq.answer()
+
+        except Exception as e:
+            logger.exception("Clear failed: %s", e)
+            await cq.answer("Error", show_alert=True)
+
+        return
+
+    # --- ADMIN ACTIONS ---
+    if not data.startswith("A|"):
+        return
+
+    cmd = data.split("|")[1]
+    target = settings.TARGET_CHAT_ID or settings.OWNER_ID
+    target = int(target) if target else None
+
+    tasks = getattr(client, "_admin_tasks", {})
 
     if cmd == "start":
-        if not target_chat:
-            return await cq.answer("No target chat configured", show_alert=True)
-        task = admin_tasks.get(target_chat)
-        if task and not task.done():
-            return await cq.answer("Backfill already running", show_alert=True)
-        loop = asyncio.get_running_loop()
-        task = loop.create_task(backfill_history(client, mongo, target_chat))
-        admin_tasks[target_chat] = task
-        await cq.answer("Backfill started")
+        if not target:
+            return await cq.answer("No target", show_alert=True)
+
+        if target in tasks and not tasks[target].done():
+            return await cq.answer("Already running", show_alert=True)
+
+        task = asyncio.get_running_loop().create_task(
+            backfill_history(client, mongo, target)
+        )
+        tasks[target] = task
+        await cq.answer("Started")
 
     elif cmd == "stop":
-        task = admin_tasks.get(target_chat)
+        task = tasks.get(target)
         if not task:
-            return await cq.answer("No running backfill", show_alert=True)
+            return await cq.answer("No task", show_alert=True)
+
         task.cancel()
-        await cq.answer("Backfill cancelled")
+        await cq.answer("Stopped")
 
     elif cmd == "stats":
-        try:
-            files_col = mongo.db.get_collection("files")
-            total_files = files_col.count_documents({})
-            duplicates = files_col.count_documents({"is_duplicate": True})
-            await cq.message.reply_text(f"Total files: {total_files}\nDuplicates: {duplicates}")
-            await cq.answer()
-        except Exception:
-            await cq.answer("Failed to fetch stats", show_alert=True)
+        files = mongo.db.get_collection("files")
+        total = files.count_documents({})
+        dups = files.count_documents({"is_duplicate": True})
 
-    else:
+        await cq.message.reply_text(
+            f"Total: {total}\nDuplicates: {dups}"
+        )
         await cq.answer()
