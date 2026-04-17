@@ -239,7 +239,7 @@ def register_admin_handlers(client: Client, mongo):
         await message.reply_text("Admin panel", reply_markup=kb)
 
     # --- Callback handler ---
-def handle_admin_callback(client: Client, cq: CallbackQuery):
+async def handle_admin_callback(client: Client, cq: CallbackQuery):
     """Standalone handler for admin callback queries (C| and A| prefixes). To be called from a merged callback dispatcher."""
     import asyncio
     from app.config.settings import settings
