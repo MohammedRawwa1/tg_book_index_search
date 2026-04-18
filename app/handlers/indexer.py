@@ -1,5 +1,5 @@
 """Indexer handlers for live and history indexing."""
-from pyrogram import Client
+from pyrogram import Client, filters
 from pyrogram.types import Message
 import os
 
@@ -21,7 +21,7 @@ def register_indexer(client: Client, mongo):
     allow_video = os.getenv("INDEX_VIDEO", "true").lower() in ("1", "true", "yes")
     skip_sender_chat = os.getenv("SKIP_SENDER_CHAT", "true").lower() in ("1", "true", "yes")
 
-    @client.on_message()
+    @client.on_message(filters.document)
     async def _on_message(client: Client, message: Message):
         # Skip messages sent by bots (chatbots/automated accounts)
         try:
@@ -111,7 +111,7 @@ def register_indexer(client: Client, mongo):
         )
         limiter.reset()
 
-    @client.on_edited_message()
+    @client.on_edited_message(filters.document)
     async def _on_edit(client: Client, message: Message):
         # Skip edits from bots
         try:
@@ -264,6 +264,16 @@ async def backfill_history(client: Client, mongo, target_chat_id: int, limit: in
                 )
                 return
 
+    # honor INDEX_VIDEO / SKIP_SENDER_CHAT for backfill selection
+    try:
+        allow_video = os.getenv("INDEX_VIDEO", "true").lower() in ("1", "true", "yes")
+    except Exception:
+        allow_video = True
+    try:
+        skip_sender_chat = os.getenv("SKIP_SENDER_CHAT", "true").lower() in ("1", "true", "yes")
+    except Exception:
+        skip_sender_chat = True
+
     try:
         # helper to inspect raw message dict for reply_to_top_id (Telethon/raw cases)
         def _find_reply_top_id(obj):
@@ -308,7 +318,44 @@ async def backfill_history(client: Client, mongo, target_chat_id: int, limit: in
                         mt = mt
                 if mt != thread_id:
                     continue
-            pending.append(msg)
+            # optional: skip sender_chat/channel posts
+            try:
+                if skip_sender_chat and getattr(msg, "sender_chat", None):
+                    continue
+            except Exception:
+                pass
+
+            # Accept only documents, or videos when allowed. Some videos may be sent
+            # as `document` objects (with video mime/extension) so detect that.
+            try:
+                doc = getattr(msg, "document", None)
+                vid = getattr(msg, "video", None)
+                if doc is not None:
+                    doc_mime = (getattr(doc, "mime_type", None) or getattr(doc, "mime", None) or "").lower()
+                    doc_name = (getattr(doc, "file_name", None) or "").lower()
+                    is_video_doc = False
+                    try:
+                        if doc_mime.startswith("video/"):
+                            is_video_doc = True
+                        else:
+                            if doc_name.endswith((".mp4", ".mkv", ".webm", ".mov", ".avi", ".flv", ".mpeg", ".mpg")):
+                                is_video_doc = True
+                    except Exception:
+                        is_video_doc = False
+
+                    if is_video_doc and not allow_video:
+                        continue
+                    pending.append(msg)
+                elif vid is not None:
+                    if allow_video:
+                        pending.append(msg)
+                    else:
+                        continue
+                else:
+                    continue
+            except Exception:
+                # fallback: append and let later code filter
+                pending.append(msg)
     except Exception:
         # If resolving the normalized peer id fails (fresh session/storage),
         # fall back to using the original target_chat_id form.
@@ -335,7 +382,39 @@ async def backfill_history(client: Client, mongo, target_chat_id: int, limit: in
                             mt = mt
                     if mt != thread_id:
                         continue
-                pending.append(msg)
+                try:
+                    if skip_sender_chat and getattr(msg, "sender_chat", None):
+                        continue
+                except Exception:
+                    pass
+                try:
+                    doc = getattr(msg, "document", None)
+                    vid = getattr(msg, "video", None)
+                    if doc is not None:
+                        doc_mime = (getattr(doc, "mime_type", None) or getattr(doc, "mime", None) or "").lower()
+                        doc_name = (getattr(doc, "file_name", None) or "").lower()
+                        is_video_doc = False
+                        try:
+                            if doc_mime.startswith("video/"):
+                                is_video_doc = True
+                            else:
+                                if doc_name.endswith((".mp4", ".mkv", ".webm", ".mov", ".avi", ".flv", ".mpeg", ".mpg")):
+                                    is_video_doc = True
+                        except Exception:
+                            is_video_doc = False
+
+                        if is_video_doc and not allow_video:
+                            continue
+                        pending.append(msg)
+                    elif vid is not None:
+                        if allow_video:
+                            pending.append(msg)
+                        else:
+                            continue
+                    else:
+                        continue
+                except Exception:
+                    pending.append(msg)
         except Exception:
             from app.utils.logger import logger
 

@@ -192,12 +192,22 @@ _COOLDOWN = settings.SEARCH_COOLDOWN
 # -------------------------------
 async def iter_results(file_index, tokens, query, batch=100):
     page = 1
+    try:
+        allow_video = os.getenv("INDEX_VIDEO", "true").lower() in ("1", "true", "yes")
+    except Exception:
+        allow_video = True
     while True:
+        # pass extension filter when configured to hide videos
+        filters = None
+        if not allow_video:
+            filters = {"extension": {"$nin": ["mp4", "mkv", "webm", "mov", "avi", "flv", "mpeg", "mpg"]}}
+
         res = file_index.search_with_ranking(
             tokens,
             query=query,
             page=page,
-            per_page=batch
+            per_page=batch,
+            filters=filters,
         )
         results = res.get("results", [])
         if not results:

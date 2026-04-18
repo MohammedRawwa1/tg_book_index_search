@@ -3601,6 +3601,31 @@ async def api_search(
         end = start + per_page
         page_results = results[start:end]
 
+    # Respect INDEX_VIDEO env: if false, filter out video-like docs
+    try:
+        allow_video = os.getenv("INDEX_VIDEO", "true").lower() in ("1", "true", "yes")
+    except Exception:
+        allow_video = True
+
+    if not allow_video:
+        def _is_video_doc(d: dict) -> bool:
+            try:
+                mime = (d.get("codec") or d.get("mime") or d.get("content_type") or "").lower()
+                if mime and mime.startswith("video/"):
+                    return True
+            except Exception:
+                pass
+            try:
+                fname = (d.get("filename") or d.get("file_name") or "").lower()
+                if fname.endswith((".mp4", ".mkv", ".webm", ".mov", ".avi", ".flv", ".mpeg", ".mpg")):
+                    return True
+            except Exception:
+                pass
+            return False
+
+        page_results = [r for r in page_results if not _is_video_doc(r)]
+        total = len(page_results)
+
     # Support markdown output for easy export/pasting into chats
     if str(output_format).lower() in ("md", "markdown"):
         def is_book_doc(doc: dict) -> bool:
