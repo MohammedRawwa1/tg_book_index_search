@@ -19,6 +19,13 @@ def register_indexer(client: Client, mongo):
 
     @client.on_message()
     async def _on_message(client: Client, message: Message):
+        # Skip messages sent by bots (chatbots/automated accounts)
+        try:
+            if getattr(message, "from_user", None) and getattr(message.from_user, "is_bot", False):
+                return
+        except Exception:
+            pass
+
         # Minimal example: prefer document attachments (books) then video
         attachment = None
         if getattr(message, "document", None):
@@ -79,6 +86,13 @@ def register_indexer(client: Client, mongo):
 
     @client.on_edited_message()
     async def _on_edit(client: Client, message: Message):
+        # Skip edits from bots
+        try:
+            if getattr(message, "from_user", None) and getattr(message.from_user, "is_bot", False):
+                return
+        except Exception:
+            pass
+
         # Re-index edited messages (captions changed or file replaced)
         attachment = None
         if getattr(message, "document", None):
@@ -284,6 +298,7 @@ async def backfill_history(client: Client, mongo, target_chat_id: int, limit: in
         "indexed": 0,
         "skipped_no_book": 0,
         "skipped_no_filename": 0,
+        "skipped_bot": 0,
     }
 
     batch = []
@@ -359,6 +374,13 @@ async def backfill_history(client: Client, mongo, target_chat_id: int, limit: in
         stats["scanned"] += 1
         msg_id = getattr(msg, "message_id", getattr(msg, "id", None))
         chat_id_val = getattr(msg.chat, "id", None) if getattr(msg, "chat", None) else None
+        # Skip messages from bots so we don't index chatbot media
+        try:
+            if getattr(msg, "from_user", None) and getattr(msg.from_user, "is_bot", False):
+                stats["skipped_bot"] += 1
+                continue
+        except Exception:
+            pass
         # prefer document attachments (typical for book files)
         attachment = getattr(msg, "document", None) or getattr(msg, "video", None)
         if not attachment:
@@ -418,12 +440,13 @@ async def backfill_history(client: Client, mongo, target_chat_id: int, limit: in
 
     from app.utils.logger import logger
     logger.info(
-        "Backfill complete for {}: scanned={} indexed={} skipped_no_book={} skipped_no_filename={}",
+        "Backfill complete for {}: scanned={} indexed={} skipped_no_book={} skipped_no_filename={} skipped_bot={}",
         target_chat_id,
         stats["scanned"],
         stats["indexed"],
         stats["skipped_no_book"],
         stats["skipped_no_filename"],
+        stats["skipped_bot"],
     )
 
     # Invalidate server-side search cache (if present) after a backfill/reindex
