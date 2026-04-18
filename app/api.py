@@ -1197,6 +1197,16 @@ async def _process_search_and_send(token: str, chat_id: int, query: str) -> None
         total = res.get("total", 0)
         if not results:
             reply_text = f"*No results* for {_escape_markdown(query)}"
+            # Short-circuit: send a simple 'no results' reply immediately
+            try:
+                await _send_tg(token, chat_id, reply_text, parse_mode="Markdown")
+                try:
+                    logger.info("_process_search_and_send: sent no-results to chat {}", chat_id)
+                except Exception:
+                    pass
+            except Exception:
+                logger.exception("_process_search_and_send: failed to send no-results message")
+            return
         else:
             lines = [f"*Search:* {_escape_markdown(query)} — {total} results"]
             from app.utils.helpers import sanitize_filename_for_display
