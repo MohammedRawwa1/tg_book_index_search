@@ -1,6 +1,7 @@
 """Indexer handlers for live and history indexing."""
 from pyrogram import Client
 from pyrogram.types import Message
+import os
 
 from app.services.tokenizer import tokenize_filename
 from app.models.file_index_impl import FileIndex
@@ -16,6 +17,9 @@ def register_indexer(client: Client, mongo):
 
     file_index = FileIndex(mongo.db)
     limiter = RateLimiter()
+    # Config: allow indexing of video attachments and whether to skip channel/sender_chat posts
+    allow_video = os.getenv("INDEX_VIDEO", "true").lower() in ("1", "true", "yes")
+    skip_sender_chat = os.getenv("SKIP_SENDER_CHAT", "true").lower() in ("1", "true", "yes")
 
     @client.on_message()
     async def _on_message(client: Client, message: Message):
@@ -25,12 +29,17 @@ def register_indexer(client: Client, mongo):
                 return
         except Exception:
             pass
-
-        # Minimal example: prefer document attachments (books) then video
+        # Optionally skip posts that originate from a sender_chat (channel posts)
+        try:
+            if skip_sender_chat and getattr(message, "sender_chat", None):
+                return
+        except Exception:
+            pass
+        # Minimal example: prefer document attachments (books) then video (configurable)
         attachment = None
         if getattr(message, "document", None):
             attachment = message.document
-        elif getattr(message, "video", None):
+        elif allow_video and getattr(message, "video", None):
             attachment = message.video
         if not attachment:
             return
@@ -89,6 +98,13 @@ def register_indexer(client: Client, mongo):
         # Skip edits from bots
         try:
             if getattr(message, "from_user", None) and getattr(message.from_user, "is_bot", False):
+                return
+        except Exception:
+            pass
+
+        # Optionally skip edits that originate from a sender_chat (channel posts)
+        try:
+            if skip_sender_chat and getattr(message, "sender_chat", None):
                 return
         except Exception:
             pass
@@ -299,6 +315,7 @@ async def backfill_history(client: Client, mongo, target_chat_id: int, limit: in
         "skipped_no_book": 0,
         "skipped_no_filename": 0,
         "skipped_bot": 0,
+        "skipped_sender_chat": 0,
     }
 
     batch = []
@@ -381,6 +398,13 @@ async def backfill_history(client: Client, mongo, target_chat_id: int, limit: in
                 continue
         except Exception:
             pass
+        # Optionally skip sender_chat/channel posts
+        try:
+            if skip_sender_chat and getattr(msg, "sender_chat", None):
+                stats["skipped_sender_chat"] += 1
+                continue
+        except Exception:
+            pass
         # prefer document attachments (typical for book files)
         attachment = getattr(msg, "document", None) or getattr(msg, "video", None)
         if not attachment:
@@ -440,13 +464,14 @@ async def backfill_history(client: Client, mongo, target_chat_id: int, limit: in
 
     from app.utils.logger import logger
     logger.info(
-        "Backfill complete for {}: scanned={} indexed={} skipped_no_book={} skipped_no_filename={} skipped_bot={}",
+        "Backfill complete for {}: scanned={} indexed={} skipped_no_book={} skipped_no_filename={} skipped_bot={} skipped_sender_chat={}",
         target_chat_id,
         stats["scanned"],
         stats["indexed"],
         stats["skipped_no_book"],
         stats["skipped_no_filename"],
         stats["skipped_bot"],
+        stats["skipped_sender_chat"],
     )
 
     # Invalidate server-side search cache (if present) after a backfill/reindex
