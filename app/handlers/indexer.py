@@ -37,10 +37,28 @@ def register_indexer(client: Client, mongo):
             pass
         # Minimal example: prefer document attachments (books) then video (configurable)
         attachment = None
-        if getattr(message, "document", None):
-            attachment = message.document
-        elif allow_video and getattr(message, "video", None):
-            attachment = message.video
+        # Detect document attachments that are actually video files (mime or extension)
+        doc = getattr(message, "document", None)
+        vid = getattr(message, "video", None)
+        if doc:
+            doc_mime = (getattr(doc, "mime_type", None) or getattr(doc, "mime", None) or "").lower()
+            doc_name = (getattr(doc, "file_name", None) or "").lower()
+            is_video_doc = False
+            try:
+                if doc_mime.startswith("video/"):
+                    is_video_doc = True
+                else:
+                    # fallback to filename extension
+                    if doc_name.endswith((".mp4", ".mkv", ".webm", ".mov", ".avi", ".flv", ".mpeg", ".mpg")):
+                        is_video_doc = True
+            except Exception:
+                is_video_doc = False
+
+            if is_video_doc and not allow_video:
+                return
+            attachment = doc
+        elif vid and allow_video:
+            attachment = vid
         if not attachment:
             return
         filename = getattr(attachment, "file_name", None)
@@ -111,10 +129,26 @@ def register_indexer(client: Client, mongo):
 
         # Re-index edited messages (captions changed or file replaced)
         attachment = None
-        if getattr(message, "document", None):
-            attachment = message.document
-        elif getattr(message, "video", None):
-            attachment = message.video
+        doc = getattr(message, "document", None)
+        vid = getattr(message, "video", None)
+        if doc:
+            doc_mime = (getattr(doc, "mime_type", None) or getattr(doc, "mime", None) or "").lower()
+            doc_name = (getattr(doc, "file_name", None) or "").lower()
+            is_video_doc = False
+            try:
+                if doc_mime.startswith("video/"):
+                    is_video_doc = True
+                else:
+                    if doc_name.endswith((".mp4", ".mkv", ".webm", ".mov", ".avi", ".flv", ".mpeg", ".mpg")):
+                        is_video_doc = True
+            except Exception:
+                is_video_doc = False
+
+            if is_video_doc and not allow_video:
+                return
+            attachment = doc
+        elif vid and allow_video:
+            attachment = vid
         if not attachment:
             return
         filename = getattr(attachment, "file_name", None)
@@ -316,6 +350,7 @@ async def backfill_history(client: Client, mongo, target_chat_id: int, limit: in
         "skipped_no_filename": 0,
         "skipped_bot": 0,
         "skipped_sender_chat": 0,
+        "skipped_video": 0,
     }
 
     batch = []
@@ -405,11 +440,31 @@ async def backfill_history(client: Client, mongo, target_chat_id: int, limit: in
                 continue
         except Exception:
             pass
-        # prefer document attachments (typical for book files)
-        attachment = getattr(msg, "document", None) or getattr(msg, "video", None)
+        # prefer document attachments (typical for book files) but respect INDEX_VIDEO
+        doc = getattr(msg, "document", None)
+        vid = getattr(msg, "video", None)
+        attachment = None
+        is_video_doc = False
+        if doc:
+            doc_mime = (getattr(doc, "mime_type", None) or getattr(doc, "mime", None) or "").lower()
+            doc_name = (getattr(doc, "file_name", None) or "").lower()
+            try:
+                if doc_mime.startswith("video/") or doc_name.endswith((".mp4", ".mkv", ".webm", ".mov", ".avi", ".flv", ".mpeg", ".mpg")):
+                    is_video_doc = True
+            except Exception:
+                is_video_doc = False
+
+            if is_video_doc and not allow_video:
+                stats["skipped_video"] += 1
+                continue
+            attachment = doc
+        elif vid and allow_video:
+            attachment = vid
+
         if not attachment:
             stats["skipped_no_book"] += 1
             continue
+
         filename = getattr(attachment, "file_name", None)
         if not filename:
             stats["skipped_no_filename"] += 1
@@ -464,7 +519,7 @@ async def backfill_history(client: Client, mongo, target_chat_id: int, limit: in
 
     from app.utils.logger import logger
     logger.info(
-        "Backfill complete for {}: scanned={} indexed={} skipped_no_book={} skipped_no_filename={} skipped_bot={} skipped_sender_chat={}",
+        "Backfill complete for {}: scanned={} indexed={} skipped_no_book={} skipped_no_filename={} skipped_bot={} skipped_sender_chat={} skipped_video={}",
         target_chat_id,
         stats["scanned"],
         stats["indexed"],
@@ -472,6 +527,7 @@ async def backfill_history(client: Client, mongo, target_chat_id: int, limit: in
         stats["skipped_no_filename"],
         stats["skipped_bot"],
         stats["skipped_sender_chat"],
+        stats["skipped_video"],
     )
 
     # Invalidate server-side search cache (if present) after a backfill/reindex
