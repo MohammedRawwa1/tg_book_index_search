@@ -1168,10 +1168,22 @@ async def telegram_webhook(token: str, update: dict):
 
 async def _process_search_and_send(token: str, chat_id: int, query: str) -> None:
     """Background task: run search and send reply via Telegram HTTP API."""
+    # Diagnostic: log entry and mask token for safety
+    try:
+        masked = None
+        try:
+            if token:
+                masked = (token[:4] + "..." + token[-4:]) if len(token) > 8 else token
+        except Exception:
+            masked = "[unknown]"
+        logger.info("_process_search_and_send start: token=%s chat=%s query=%s", masked, chat_id, (query or "")[:200])
+    except Exception:
+        pass
+
     try:
         res = await api_search(q=query, page=1, per_page=50)
     except Exception as exc:
-        logger.exception("background search failed: {}", exc)
+        logger.exception("background search failed: %s", exc)
         res = None
 
     # Ensure `results` and `total` are always defined to avoid NameError
@@ -1214,6 +1226,7 @@ async def _process_search_and_send(token: str, chat_id: int, query: str) -> None
     # in other branches below.
 
     try:
+        logger.info("_process_search_and_send: total=%s results_len=%s", total, len(results))
         if len(reply_text) <= MAX_MSG:
             # Build a HTML message body where each result is an inline <a> link
             # so users can click links directly in the message text.
@@ -1943,14 +1956,23 @@ async def _process_search_and_send(token: str, chat_id: int, query: str) -> None
             pass
         return
 
+    # Final simple send fallback
+    try:
+        logger.info("_process_search_and_send: attempting simple send (len=%s)", len(reply_text))
+    except Exception:
+        pass
+
     tg_url = f"https://api.telegram.org/bot{token}/sendMessage"
     payload = {"chat_id": chat_id, "text": reply_text, "parse_mode": "Markdown"}
     async with httpx.AsyncClient() as client:
         try:
             resp = await client.post(tg_url, json=payload, timeout=10)
-            logger.info("Telegram sendMessage response: status={}, body={}", resp.status_code, resp.text[:400])
+            try:
+                logger.info("Telegram sendMessage response: status=%s body=%s", resp.status_code, (resp.text or "")[:400])
+            except Exception:
+                logger.info("Telegram sendMessage response: status=%s", resp.status_code)
         except Exception as exc:
-            logger.exception("Failed to POST to Telegram API (background): {}", exc)
+            logger.exception("Failed to POST to Telegram API (background): %s", exc)
 
 
 async def _send_tg(token: str, chat_id: int, text: str, parse_mode: str | None = None, reply_markup: object | None = None) -> None:
