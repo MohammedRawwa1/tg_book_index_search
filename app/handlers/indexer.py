@@ -18,8 +18,17 @@ def register_indexer(client: Client, mongo):
     file_index = FileIndex(mongo.db)
     limiter = RateLimiter()
     # Config: allow indexing of video attachments and whether to skip channel/sender_chat posts
-    allow_video = os.getenv("INDEX_VIDEO", "true").lower() in ("1", "true", "yes")
+    allow_video = os.getenv("INDEX_VIDEO", "false").lower() in ("1", "true", "yes")
     skip_sender_chat = os.getenv("SKIP_SENDER_CHAT", "true").lower() in ("1", "true", "yes")
+    # Allowed document extensions (comma separated). Default = common ebook/doc formats.
+    allowed_exts_raw = os.getenv(
+        "ALLOWED_DOC_EXTENSIONS",
+        "pdf,epub,mobi,azw3,azw,cbz,cbr,txt,rtf,doc,docx,odt",
+    )
+    try:
+        ALLOWED_EXTS = [e.strip().lower() for e in allowed_exts_raw.split(",") if e.strip()]
+    except Exception:
+        ALLOWED_EXTS = ["pdf", "epub", "mobi", "azw3", "azw", "txt", "doc", "docx"]
 
     @client.on_message(filters.document)
     async def _on_message(client: Client, message: Message):
@@ -35,32 +44,18 @@ def register_indexer(client: Client, mongo):
                 return
         except Exception:
             pass
-        # Minimal example: prefer document attachments (books) then video (configurable)
-        attachment = None
-        # Detect document attachments that are actually video files (mime or extension)
+        # Only index document attachments that match allowed extensions.
         doc = getattr(message, "document", None)
-        vid = getattr(message, "video", None)
-        if doc:
-            doc_mime = (getattr(doc, "mime_type", None) or getattr(doc, "mime", None) or "").lower()
-            doc_name = (getattr(doc, "file_name", None) or "").lower()
-            is_video_doc = False
-            try:
-                if doc_mime.startswith("video/"):
-                    is_video_doc = True
-                else:
-                    # fallback to filename extension
-                    if doc_name.endswith((".mp4", ".mkv", ".webm", ".mov", ".avi", ".flv", ".mpeg", ".mpg")):
-                        is_video_doc = True
-            except Exception:
-                is_video_doc = False
-
-            if is_video_doc and not allow_video:
-                return
-            attachment = doc
-        elif vid and allow_video:
-            attachment = vid
-        if not attachment:
+        if not doc:
             return
+        doc_name = (getattr(doc, "file_name", None) or "").strip()
+        if not doc_name or "." not in doc_name:
+            return
+        ext = doc_name.split(".")[-1].lower()
+        if ext not in ALLOWED_EXTS:
+            # skip non-doc media (audio/video/images, archives, etc.)
+            return
+        attachment = doc
         filename = getattr(attachment, "file_name", None)
         if not filename:
             return
@@ -131,27 +126,16 @@ def register_indexer(client: Client, mongo):
         attachment = None
         doc = getattr(message, "document", None)
         vid = getattr(message, "video", None)
-        if doc:
-            doc_mime = (getattr(doc, "mime_type", None) or getattr(doc, "mime", None) or "").lower()
-            doc_name = (getattr(doc, "file_name", None) or "").lower()
-            is_video_doc = False
-            try:
-                if doc_mime.startswith("video/"):
-                    is_video_doc = True
-                else:
-                    if doc_name.endswith((".mp4", ".mkv", ".webm", ".mov", ".avi", ".flv", ".mpeg", ".mpg")):
-                        is_video_doc = True
-            except Exception:
-                is_video_doc = False
-
-            if is_video_doc and not allow_video:
-                return
-            attachment = doc
-        elif vid and allow_video:
-            attachment = vid
-        if not attachment:
+        # For edits, apply same allowed-extensions filter
+        doc = getattr(message, "document", None)
+        if not doc:
             return
-        filename = getattr(attachment, "file_name", None)
+        filename = (getattr(doc, "file_name", None) or "").strip()
+        if not filename or "." not in filename:
+            return
+        ext = filename.split(".")[-1].lower()
+        if ext not in ALLOWED_EXTS:
+            return
         if not filename:
             return
         # capture topic/thread id for forum topics (may be None)
@@ -325,34 +309,19 @@ async def backfill_history(client: Client, mongo, target_chat_id: int, limit: in
             except Exception:
                 pass
 
-            # Accept only documents, or videos when allowed. Some videos may be sent
-            # as `document` objects (with video mime/extension) so detect that.
+            # Accept only documents. Some documents may be video-like (by mime
+            # or extension) but we filter by allowed extensions above.
             try:
                 doc = getattr(msg, "document", None)
-                vid = getattr(msg, "video", None)
-                if doc is not None:
-                    doc_mime = (getattr(doc, "mime_type", None) or getattr(doc, "mime", None) or "").lower()
-                    doc_name = (getattr(doc, "file_name", None) or "").lower()
-                    is_video_doc = False
-                    try:
-                        if doc_mime.startswith("video/"):
-                            is_video_doc = True
-                        else:
-                            if doc_name.endswith((".mp4", ".mkv", ".webm", ".mov", ".avi", ".flv", ".mpeg", ".mpg")):
-                                is_video_doc = True
-                    except Exception:
-                        is_video_doc = False
-
-                    if is_video_doc and not allow_video:
-                        continue
-                    pending.append(msg)
-                elif vid is not None:
-                    if allow_video:
-                        pending.append(msg)
-                    else:
-                        continue
-                else:
+                if doc is None:
                     continue
+                doc_name = (getattr(doc, "file_name", None) or "").strip()
+                if not doc_name or "." not in doc_name:
+                    continue
+                ext = doc_name.split(".")[-1].lower()
+                if ext not in ALLOWED_EXTS:
+                    continue
+                pending.append(msg)
             except Exception:
                 # fallback: append and let later code filter
                 pending.append(msg)
@@ -387,33 +356,20 @@ async def backfill_history(client: Client, mongo, target_chat_id: int, limit: in
                         continue
                 except Exception:
                     pass
+
                 try:
                     doc = getattr(msg, "document", None)
-                    vid = getattr(msg, "video", None)
-                    if doc is not None:
-                        doc_mime = (getattr(doc, "mime_type", None) or getattr(doc, "mime", None) or "").lower()
-                        doc_name = (getattr(doc, "file_name", None) or "").lower()
-                        is_video_doc = False
-                        try:
-                            if doc_mime.startswith("video/"):
-                                is_video_doc = True
-                            else:
-                                if doc_name.endswith((".mp4", ".mkv", ".webm", ".mov", ".avi", ".flv", ".mpeg", ".mpg")):
-                                    is_video_doc = True
-                        except Exception:
-                            is_video_doc = False
-
-                        if is_video_doc and not allow_video:
-                            continue
-                        pending.append(msg)
-                    elif vid is not None:
-                        if allow_video:
-                            pending.append(msg)
-                        else:
-                            continue
-                    else:
+                    if doc is None:
                         continue
+                    doc_name = (getattr(doc, "file_name", None) or "").strip()
+                    if not doc_name or "." not in doc_name:
+                        continue
+                    ext = doc_name.split(".")[-1].lower()
+                    if ext not in ALLOWED_EXTS:
+                        continue
+                    pending.append(msg)
                 except Exception:
+                    # fallback: append and let later code filter
                     pending.append(msg)
         except Exception:
             from app.utils.logger import logger

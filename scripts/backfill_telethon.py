@@ -64,10 +64,20 @@ async def run_backfill(chat_id: int, thread_id: int | None, limit: int = 20000, 
         "indexed": 0,
         "skipped_no_book": 0,
         "skipped_no_filename": 0,
+        "skipped_bad_ext": 0,
     }
 
     batch = []
     BATCH_SIZE = int(os.getenv("BACKFILL_BATCH_SIZE", "500"))
+    # Allowed document extensions (comma separated). Default = common ebook/doc formats.
+    allowed_exts_raw = os.getenv(
+        "ALLOWED_DOC_EXTENSIONS",
+        "pdf,epub,mobi,azw3,azw,cbz,cbr,txt,rtf,doc,docx,odt",
+    )
+    try:
+        ALLOWED_EXTS = {e.strip().lower() for e in allowed_exts_raw.split(",") if e.strip()}
+    except Exception:
+        ALLOWED_EXTS = {"pdf", "epub", "mobi", "azw3", "azw", "txt", "doc", "docx", "odt"}
     # Accept any filename-like documents; backfill should index documents (books)
 
     def _extract_filename_from_attachment(attachment, msg):
@@ -155,8 +165,8 @@ async def run_backfill(chat_id: int, thread_id: int | None, limit: int = 20000, 
                 if not belongs:
                     continue
 
-                # extract attachment (prefer document attachments since books are sent as documents)
-                attachment = getattr(msg, "document", None) or getattr(msg, "video", None)
+                # extract attachment (only document attachments; skip video/audio messages)
+                attachment = getattr(msg, "document", None)
                 if not attachment:
                     stats["skipped_no_book"] += 1
                     continue
@@ -172,7 +182,14 @@ async def run_backfill(chat_id: int, thread_id: int | None, limit: int = 20000, 
                     stats["skipped_no_filename"] += 1
                     continue
 
-                # Accept any filename as potential book/document; no strict ext filter
+                # Enforce allowed extensions whitelist
+                try:
+                    if not ext or ext not in ALLOWED_EXTS:
+                        stats["skipped_bad_ext"] += 1
+                        continue
+                except Exception:
+                    stats["skipped_bad_ext"] += 1
+                    continue
 
                 token_struct = tokenize_filename(filename)
                 file_id = getattr(attachment, "file_id", None)
@@ -221,7 +238,8 @@ async def run_backfill(chat_id: int, thread_id: int | None, limit: int = 20000, 
 
     print(
         f"Telethon backfill complete: scanned={stats['scanned']} indexed={stats['indexed']} "
-        f"skipped_no_book={stats['skipped_no_book']} skipped_no_filename={stats['skipped_no_filename']}"
+        f"skipped_no_book={stats['skipped_no_book']} skipped_no_filename={stats['skipped_no_filename']} "
+        f"skipped_bad_ext={stats.get('skipped_bad_ext', 0)}"
     )
 
 
