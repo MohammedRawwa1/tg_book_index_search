@@ -653,12 +653,29 @@ async def telegram_webhook(token: str, update: dict):
                     msg = cq.get("message")
                     # perform DB action
                     if action == "delete":
+                        # Try to delete via app state DB if available
                         if db is not None:
                             try:
                                 await db.get_collection("files").delete_many({})
                                 await db.get_collection("index_state").delete_many({})
                             except Exception:
-                                logger.exception("API clear_all: delete operation failed")
+                                logger.exception("API clear_all: delete operation failed using app.state.db")
+                        else:
+                            # Fallback: create a temporary AsyncIOMotorClient to perform deletion
+                            try:
+                                tmp_client = AsyncIOMotorClient(settings.MONGO_URI)
+                                tmp_db = tmp_client[settings.DB_NAME]
+                                try:
+                                    await tmp_db.get_collection("files").delete_many({})
+                                    await tmp_db.get_collection("index_state").delete_many({})
+                                except Exception:
+                                    logger.exception("API clear_all: delete operation failed using fallback motor client")
+                                try:
+                                    tmp_client.close()
+                                except Exception:
+                                    pass
+                            except Exception:
+                                logger.exception("API clear_all: could not create fallback motor client")
                         # edit original message to show result
                         edit_url = f"https://api.telegram.org/bot{token}/editMessageText"
                         payload = {"text": "Documents deleted."}
@@ -696,7 +713,29 @@ async def telegram_webhook(token: str, update: dict):
                                 except Exception:
                                     pass
                             except Exception:
-                                logger.exception("API clear_all: drop operation failed")
+                                logger.exception("API clear_all: drop operation failed using app.state.db")
+                        else:
+                            # Fallback: create a temporary AsyncIOMotorClient to perform drop
+                            try:
+                                tmp_client = AsyncIOMotorClient(settings.MONGO_URI)
+                                tmp_db = tmp_client[settings.DB_NAME]
+                                try:
+                                    try:
+                                        await tmp_db.drop_collection("files")
+                                    except Exception:
+                                        pass
+                                    try:
+                                        await tmp_db.drop_collection("index_state")
+                                    except Exception:
+                                        pass
+                                except Exception:
+                                    logger.exception("API clear_all: drop operation failed using fallback motor client")
+                                try:
+                                    tmp_client.close()
+                                except Exception:
+                                    pass
+                            except Exception:
+                                logger.exception("API clear_all: could not create fallback motor client for drop")
                         edit_url = f"https://api.telegram.org/bot{token}/editMessageText"
                         payload = {"text": "Collections dropped."}
                         if msg and msg.get("chat"):

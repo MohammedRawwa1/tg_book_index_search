@@ -5,6 +5,7 @@ from pyrogram import Client, filters
 from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 
 from app.config.settings import settings
+from motor.motor_asyncio import AsyncIOMotorClient
 from app.handlers.indexer import backfill_history
 from app.utils.logger import logger
 
@@ -145,18 +146,58 @@ async def handle_admin_callback(client: Client, cq: CallbackQuery):
         action = data.split("|")[1]
 
         try:
+            # Try using attached mongo instance (may be a sync PyMongo wrapper)
+            performed = False
+            if mongo is not None:
+                try:
+                    if action == "delete":
+                        mongo.db.get_collection("files").delete_many({})
+                        mongo.db.get_collection("index_state").delete_many({})
+                    elif action == "drop":
+                        try:
+                            mongo.db.drop_collection("files")
+                        except Exception:
+                            pass
+                        try:
+                            mongo.db.drop_collection("index_state")
+                        except Exception:
+                            pass
+                    performed = True
+                except Exception:
+                    logger.exception("Admin clear: attached mongo delete/drop failed, will fallback to async client")
+
+            if not performed:
+                # Fallback: create a temporary AsyncIOMotorClient and perform action
+                try:
+                    mclient = AsyncIOMotorClient(settings.MONGO_URI)
+                    mdb = mclient[settings.DB_NAME]
+                    if action == "delete":
+                        await mdb.get_collection("files").delete_many({})
+                        await mdb.get_collection("index_state").delete_many({})
+                    elif action == "drop":
+                        try:
+                            await mdb.drop_collection("files")
+                        except Exception:
+                            pass
+                        try:
+                            await mdb.drop_collection("index_state")
+                        except Exception:
+                            pass
+                    try:
+                        mclient.close()
+                    except Exception:
+                        pass
+                    performed = True
+                except Exception:
+                    logger.exception("Admin clear: fallback AsyncIOMotorClient operation failed")
+
+            # Report results to user
             if action == "delete":
-                mongo.db.get_collection("files").delete_many({})
-                mongo.db.get_collection("index_state").delete_many({})
                 await cq.message.edit_text("Documents deleted.")
                 await cq.answer("Deleted")
-
             elif action == "drop":
-                mongo.db.drop_collection("files")
-                mongo.db.drop_collection("index_state")
                 await cq.message.edit_text("Collections dropped.")
                 await cq.answer("Dropped")
-
             else:
                 await cq.message.edit_text("Cancelled.")
                 await cq.answer()
