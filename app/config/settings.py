@@ -65,6 +65,8 @@ class Settings:
 
 
 _api_creds = _parse_api_credentials()
+# Support BOT_OWNER (preferred) or legacy OWNER_ID env var
+_owner_env = os.getenv("BOT_OWNER") or os.getenv("OWNER_ID")
 
 settings = Settings(
     API_CREDENTIALS=_api_creds,
@@ -76,7 +78,7 @@ settings = Settings(
     # Mongo connection timeout in milliseconds for server selection/ping
     MONGO_CONNECT_TIMEOUT_MS=int(os.getenv("MONGO_CONNECT_TIMEOUT_MS", "10000")),
     LOG_LEVEL=os.getenv("LOG_LEVEL", "INFO"),
-    OWNER_ID=int(os.getenv("OWNER_ID")) if os.getenv("OWNER_ID") else None,
+    OWNER_ID=int(_owner_env) if _owner_env else None,
     SEARCH_COOLDOWN=int(os.getenv("SEARCH_COOLDOWN", "3")),
     MAX_QUERY_LEN=int(os.getenv("MAX_QUERY_LEN", "64")),
     DELETE_COMMANDS=(os.getenv("DELETE_COMMANDS", "false").lower() in ("1", "true", "yes")),
