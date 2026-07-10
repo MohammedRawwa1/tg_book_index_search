@@ -41,7 +41,8 @@ services:
         value: ""
       - key: "API_HASH"
         value: ""
-      - key: "OWNER_ID"
+      - key: "BOT_OWNER"
         value: ""
+      # Legacy: OWNER_ID also supported as fallback
       - key: "BACKFILL_AUTO"
         value: "false"

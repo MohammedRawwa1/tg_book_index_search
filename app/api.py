@@ -61,6 +61,46 @@ def md_to_markdown(raw_text: str) -> str:
 
     return "".join(out)
 
+
+async def _reject_if_not_owner(token: str, chat_id: int) -> bool:
+    """
+    Check if the sender (by chat_id) is the configured bot owner.
+
+    If an owner is configured and the sender is not the owner, send
+    "Unauthorized" and return True so the caller can return early.
+    If no owner is configured, or the sender is the owner, return False.
+    """
+    try:
+        owner = getattr(settings, "OWNER_ID", None)
+        if owner and int(owner) != int(chat_id):
+            await _send_tg(token, chat_id, "Unauthorized")
+            return True
+    except Exception:
+        pass
+    return False
+
+
+async def _reject_callback_if_not_owner(token: str, cq: dict) -> bool:
+    """
+    Check if the callback sender (by from.id) is the configured bot owner.
+
+    Uses _answer_callback to reply with "Unauthorized" (show_alert=True)
+    and returns True so the caller can return early.
+    """
+    try:
+        from_id = cq.get("from", {}).get("id")
+        owner = getattr(settings, "OWNER_ID", None)
+        if owner and int(from_id) != int(owner):
+            try:
+                await _answer_callback(token, cq.get("id"), text="Unauthorized", show_alert=True)
+            except Exception:
+                pass
+            return True
+    except Exception:
+        pass
+    return False
+
+
 from pyrogram import Client as TGClient
 from app.services.mongo import MongoService
 from app.handlers.indexer import backfill_history
@@ -635,18 +675,8 @@ async def telegram_webhook(token: str, update: dict):
             # e.g. C|delete, C|drop, C|cancel
             if data.startswith("C|"):
                 action = data.split("|", 1)[1]
-                # owner check
-                try:
-                    from_id = cq.get("from", {}).get("id")
-                    owner = getattr(settings, "OWNER_ID", None)
-                    if owner and int(from_id) != int(owner):
-                        try:
-                            await _answer_callback(token, cq.get("id"), text="Unauthorized", show_alert=True)
-                        except Exception:
-                            pass
-                        return JSONResponse(status_code=200, content={"ok": True})
-                except Exception:
-                    pass
+                if await _reject_callback_if_not_owner(token, cq):
+                    return JSONResponse(status_code=200, content={"ok": True})
 
                 try:
                     db = getattr(app.state, "db", None)
@@ -1057,11 +1087,14 @@ async def telegram_webhook(token: str, update: dict):
         return {"ok": True}
 
     if cmd == "/help":
-        help_text = "Commands:\n/search <query> — Search files\n/stats — Indexed file counts\n/reindex <chat_id> — Backfill chat history\n/health — DB health"
+        help_text = "Commands:\n/search <query> — Search files\n/stats — Indexed file counts (owner only)\n/reindex <chat_id> — Backfill chat history (owner only)\n/health — DB health (owner only)"
         await _send_tg(token, chat_id, help_text)
         return {"ok": True}
 
     if cmd == "/stats":
+        if await _reject_if_not_owner(token, chat_id):
+            return {"ok": True}
+
         db = getattr(app.state, "db", None)
         if db is None:
             await _send_tg(token, chat_id, "Stats: DB unavailable")
@@ -1076,6 +1109,9 @@ async def telegram_webhook(token: str, update: dict):
         return {"ok": True}
 
     if cmd == "/health":
+        if await _reject_if_not_owner(token, chat_id):
+            return {"ok": True}
+
         mongo_client = getattr(app.state, "mongo_client", None)
         db = getattr(app.state, "db", None)
         if mongo_client is None or db is None:
@@ -1090,6 +1126,9 @@ async def telegram_webhook(token: str, update: dict):
         return {"ok": True}
 
     if cmd == "/reindex":
+        if await _reject_if_not_owner(token, chat_id):
+            return {"ok": True}
+
         # /reindex <chat_id> optionally. We'll spawn scripts/backfill.py as a subprocess
         parts = text.split(maxsplit=1)
         if len(parts) < 2:
@@ -1168,14 +1207,8 @@ async def telegram_webhook(token: str, update: dict):
                 pass
 
     if cmd == "/clear_all":
-        # Only allow OWNER to trigger clear all
-        try:
-            owner = getattr(settings, "OWNER_ID", None)
-            if owner and int(owner) != int(chat_id):
-                await _send_tg(token, chat_id, "Unauthorized")
-                return {"ok": True}
-        except Exception:
-            pass
+        if await _reject_if_not_owner(token, chat_id):
+            return {"ok": True}
 
         kb = [
             [
