@@ -43,6 +43,8 @@ services:
         value: ""
       - key: "BOT_OWNER"
         value: ""
-      # Legacy: OWNER_ID also supported as fallback
+      - key: "OWNER_ID"
+        value: ""
+      # Legacy: owner_id (lowercase) also supported as fallback
       - key: "BACKFILL_AUTO"
         value: "false"
