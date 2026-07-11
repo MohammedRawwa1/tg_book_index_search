@@ -66,7 +66,7 @@ class Settings:
 
 _api_creds = _parse_api_credentials()
 # Support BOT_OWNER (preferred) or legacy OWNER_ID env var
-_owner_env = os.getenv("BOT_OWNER") or os.getenv("OWNER_ID")
+_owner_env = os.getenv("BOT_OWNER") or os.getenv("OWNER_ID") or os.getenv("owner_id")
 
 settings = Settings(
     API_CREDENTIALS=_api_creds,
