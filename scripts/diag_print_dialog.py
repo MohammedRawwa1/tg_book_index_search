@@ -20,10 +20,17 @@ async def main():
     if api_hash:
         kwargs["api_hash"] = api_hash
 
-    if session_string:
-        client = Client(session_name, session_string=session_string, **kwargs)
+    # Ensure local .session files are created in the project root (not the current CWD).
+    session_path_env = os.getenv("SESSION_PATH")
+    if session_path_env:
+        session_target = session_path_env
     else:
-        client = Client(session_name, **kwargs)
+        session_target = str(_ROOT / session_name)
+
+    if session_string:
+        client = Client(session_target, session_string=session_string, **kwargs)
+    else:
+        client = Client(session_target, **kwargs)
 
     await client.start()
     try:
