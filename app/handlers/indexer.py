@@ -248,7 +248,7 @@ async def backfill_history(client: Client, mongo, target_chat_id: int, limit: in
                 )
                 return
 
-    # honor INDEX_VIDEO / SKIP_SENDER_CHAT for backfill selection
+    # honor INDEX_VIDEO / SKIP_SENDER_CHAT / ALLOWED_DOC_EXTENSIONS for backfill selection
     try:
         allow_video = os.getenv("INDEX_VIDEO", "true").lower() in ("1", "true", "yes")
     except Exception:
@@ -257,6 +257,15 @@ async def backfill_history(client: Client, mongo, target_chat_id: int, limit: in
         skip_sender_chat = os.getenv("SKIP_SENDER_CHAT", "true").lower() in ("1", "true", "yes")
     except Exception:
         skip_sender_chat = True
+    # Define ALLOWED_EXTS locally for backfill (same env var as register_indexer)
+    try:
+        allowed_exts_raw = os.getenv(
+            "ALLOWED_DOC_EXTENSIONS",
+            "pdf,epub,mobi,azw3,azw,cbz,cbr,txt,rtf,doc,docx,odt",
+        )
+        ALLOWED_EXTS = [e.strip().lower() for e in allowed_exts_raw.split(",") if e.strip()]
+    except Exception:
+        ALLOWED_EXTS = ["pdf", "epub", "mobi", "azw3", "azw", "txt", "doc", "docx"]
 
     try:
         # helper to inspect raw message dict for reply_to_top_id (Telethon/raw cases)
@@ -504,7 +513,15 @@ async def backfill_history(client: Client, mongo, target_chat_id: int, limit: in
         if not filename:
             stats["skipped_no_filename"] += 1
             continue
-        # Accept any filename as a candidate (books/documents are not strictly restricted by extension)
+        # Filter by allowed document extensions (matches register_indexer filtering)
+        try:
+            if "." in filename:
+                fext = filename.split(".")[-1].lower()
+                if fext not in ALLOWED_EXTS:
+                    stats["skipped_video"] += 1
+                    continue
+        except Exception:
+            pass
         token_struct = tokenize_filename(filename)
         # capture available attachment metadata for bulk docs
         file_id = getattr(attachment, "file_id", None)

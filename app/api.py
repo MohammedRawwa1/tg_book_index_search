@@ -1,5 +1,5 @@
 from fastapi import FastAPI, Query, HTTPException, Request
-from fastapi.responses import JSONResponse, FileResponse, PlainTextResponse, StreamingResponse, HTMLResponse
+from fastapi.responses import JSONResponse, FileResponse, PlainTextResponse, StreamingResponse, HTMLResponse, Response
 import json
 import urllib.parse
 from fastapi.staticfiles import StaticFiles
@@ -71,7 +71,7 @@ async def _reject_if_not_owner(token: str, chat_id: int) -> bool:
     If no owner is configured, or the sender is the owner, return False.
     """
     try:
-        owner = getattr(settings, "OWNER_ID", None)
+        owner = settings.BOT_OWNER or settings.OWNER_ID
         if owner and int(owner) != int(chat_id):
             await _send_tg(token, chat_id, "Unauthorized")
             return True
@@ -89,7 +89,7 @@ async def _reject_callback_if_not_owner(token: str, cq: dict) -> bool:
     """
     try:
         from_id = cq.get("from", {}).get("id")
-        owner = getattr(settings, "OWNER_ID", None)
+        owner = settings.BOT_OWNER or settings.OWNER_ID
         if owner and int(from_id) != int(owner):
             try:
                 await _answer_callback(token, cq.get("id"), text="Unauthorized", show_alert=True)
@@ -246,6 +246,39 @@ async def startup():
         except Exception:
             pass
         app.state.db = None
+
+    # ── Auto webhook registration ──
+    # For each configured bot token, register the webhook URL with Telegram
+    # so updates are delivered to this service. This prevents issues where
+    # a bot's webhook was previously set to a different URL.
+    public_url = getattr(settings, "PUBLIC_URL", None)
+    if not public_url:
+        public_url = os.getenv("PUBLIC_URL") or os.getenv("RENDER_EXTERNAL_URL")
+    if public_url:
+        for cred in (settings.API_CREDENTIALS or []):
+            bot_token = cred.get("bot_token")
+            if not bot_token:
+                continue
+            webhook_url = f"{public_url.rstrip('/')}/webhook/{bot_token}"
+            try:
+                async with httpx.AsyncClient() as client:
+                    resp = await client.get(
+                        f"https://api.telegram.org/bot{bot_token}/setWebhook",
+                        params={"url": webhook_url},
+                        timeout=10,
+                    )
+                    if resp.status_code == 200:
+                        data = resp.json()
+                        if data.get("ok"):
+                            logger.info("Webhook registered for bot: url={} description={}", webhook_url, data.get("description"))
+                        else:
+                            logger.warning("Webhook registration returned error for bot: {}", data)
+                    else:
+                        logger.warning("Webhook registration HTTP {} for bot", resp.status_code)
+            except Exception:
+                logger.exception("Failed to register webhook for bot token ending with {}...", bot_token[-8:] if len(bot_token) > 8 else bot_token)
+    else:
+        logger.warning("PUBLIC_URL not set — skipping auto webhook registration")
 
     # Determine whether API process should run Telegram clients/backfill
     run_bots = (os.getenv("RUN_BOT_IN_API", "false").lower() in ("1", "true", "yes"))
@@ -552,6 +585,11 @@ async def root_get():
     return {"ok": True, "service": "tg-index-search-bot"}
 
 
+@app.head("/")
+async def root_head():
+    return Response(status_code=200)
+
+
 @app.post("/")
 async def root_post(payload: dict = None):
     # If Telegram sends updates to the root path (no token in URL),
@@ -583,8 +621,64 @@ async def root_post(payload: dict = None):
     return {"ok": True}
 
 
-
 @app.post("/webhook/{token}")
+@app.post("/webhook/{token}/")
+async def telegram_webhook_with_slash(token: str, update: dict):
+    """Alias: accept /webhook/<token>/ (trailing slash) as well."""
+    return await telegram_webhook(token, update)
+
+
+# Compatibility endpoints: accept webhook POSTs at the token root path
+# (e.g. https://host/<BOT_TOKEN>/). Many users set the webhook URL to
+# the raw bot token path instead of /webhook/<token>. Accept both with and
+# without trailing slash and forward to the canonical handler.
+@app.post("/{token}")
+@app.post("/{token}/")
+async def telegram_webhook_token_root(token: str, update: dict):
+    # Only handle obvious bot-token-like paths to avoid capturing other routes
+    configured_tokens = [c.get("bot_token") for c in settings.API_CREDENTIALS if c.get("bot_token")]
+    # Accept when token contains a colon (typical bot token format) or matches configured token
+    if ":" not in token and token not in configured_tokens:
+        return JSONResponse(status_code=404, content={"ok": False, "error": "unknown token"})
+    # Forward to canonical handler
+    return await telegram_webhook(token, update)
+
+
+# Fallback: catch any POST and attempt to extract a bot token from the raw path
+# This helps with percent-encoded tokens (e.g. colon encoded as %3A) or unusual
+# gateway rewrites where the token path isn't matched by the explicit route.
+@app.post("/{full_path:path}")
+async def telegram_webhook_fallback(full_path: str, request: Request):
+    raw = request.scope.get("raw_path")
+    if raw:
+        try:
+            # raw_path is bytes; decode using latin-1 to preserve byte values
+            raw_path = raw.decode("latin-1")
+        except Exception:
+            raw_path = request.url.path
+    else:
+        raw_path = request.url.path
+
+    # split segments and inspect each for a bot token-looking value
+    segments = [s for s in raw_path.strip("/").split("/") if s]
+    configured_tokens = [c.get("bot_token") for c in settings.API_CREDENTIALS if c.get("bot_token")]
+
+    for seg in reversed(segments):
+        seg_dec = urllib.parse.unquote(seg)
+        if ":" in seg_dec or seg_dec in configured_tokens:
+            try:
+                body = await request.json()
+            except Exception:
+                try:
+                    raw_body = await request.body()
+                    body = json.loads(raw_body.decode("utf-8", errors="ignore") if isinstance(raw_body, (bytes, bytearray)) else raw_body)
+                except Exception:
+                    body = {}
+            return await telegram_webhook(seg_dec, body)
+
+    return JSONResponse(status_code=404, content={"ok": False, "error": "unknown token"})
+
+
 async def telegram_webhook(token: str, update: dict):
     """Process Telegram Bot API webhook updates for configured bot tokens.
 
@@ -610,57 +704,6 @@ async def telegram_webhook(token: str, update: dict):
                 except Exception:
                     pass
                 return JSONResponse(status_code=200, content={"ok": True})
-
-
-            # Compatibility endpoints: accept webhook POSTs at the token root path
-            # (e.g. https://host/<BOT_TOKEN>/). Many users set the webhook URL to
-            # the raw bot token path instead of /webhook/<token>. Accept both with and
-            # without trailing slash and forward to the canonical handler.
-            @app.post("/{token}")
-            @app.post("/{token}/")
-            async def telegram_webhook_token_root(token: str, update: dict):
-                # Only handle obvious bot-token-like paths to avoid capturing other routes
-                configured_tokens = [c.get("bot_token") for c in settings.API_CREDENTIALS if c.get("bot_token")]
-                # Accept when token contains a colon (typical bot token format) or matches configured token
-                if ":" not in token and token not in configured_tokens:
-                    return JSONResponse(status_code=404, content={"ok": False, "error": "unknown token"})
-                # Forward to canonical handler
-                return await telegram_webhook(token, update)
-
-
-            # Fallback: catch any POST and attempt to extract a bot token from the raw path
-            # This helps with percent-encoded tokens (e.g. colon encoded as %3A) or unusual
-            # gateway rewrites where the token path isn't matched by the explicit route.
-            @app.post("/{full_path:path}")
-            async def telegram_webhook_fallback(full_path: str, request: Request):
-                raw = request.scope.get("raw_path")
-                if raw:
-                    try:
-                        # raw_path is bytes; decode using latin-1 to preserve byte values
-                        raw_path = raw.decode("latin-1")
-                    except Exception:
-                        raw_path = request.url.path
-                else:
-                    raw_path = request.url.path
-
-                # split segments and inspect each for a bot token-looking value
-                segments = [s for s in raw_path.strip("/").split("/") if s]
-                configured_tokens = [c.get("bot_token") for c in settings.API_CREDENTIALS if c.get("bot_token")]
-
-                for seg in reversed(segments):
-                    seg_dec = urllib.parse.unquote(seg)
-                    if ":" in seg_dec or seg_dec in configured_tokens:
-                        try:
-                            body = await request.json()
-                        except Exception:
-                            try:
-                                raw_body = await request.body()
-                                body = json.loads(raw_body.decode("utf-8", errors="ignore") if isinstance(raw_body, (bytes, bytearray)) else raw_body)
-                            except Exception:
-                                body = {}
-                        return await telegram_webhook(seg_dec, body)
-
-                return JSONResponse(status_code=404, content={"ok": False, "error": "unknown token"})
 
             # explicit noop callback (used as a page indicator button) should
             # be answered to clear the loading spinner but otherwise ignored.
@@ -820,232 +863,6 @@ async def telegram_webhook(token: str, update: dict):
                     except Exception:
                         pass
                 return JSONResponse(status_code=200, content={"ok": True})
-                page_id = data.split("|", 1)[1]
-                try:
-                    store = _ensure_internal_page_store()
-                    if not store:
-                        await _answer_callback(token, cq.get("id"), text="Page not found")
-                        return JSONResponse(status_code=200, content={"ok": True})
-
-                    page = await store.get_page(page_id)
-                    if not page:
-                        await _answer_callback(token, cq.get("id"), text="Page not found")
-                        return JSONResponse(status_code=200, content={"ok": True})
-                    try:
-                        logger.debug("webhook: fetched page id=%s keys=%s", page_id, list(page.keys()) if isinstance(page, dict) else None)
-                        logger.debug("webhook: page preview=%s", (page.get("content")[:200] if page.get("content") else None))
-                        logger.debug("webhook: page query=%r total_results=%r", page.get("query"), page.get("total_results"))
-                    except Exception:
-                        pass
-
-                    # Render stored page using shared helper (builds body + keyboard
-                    # and applies truncation rules). Fallback to raw conversion on error.
-                    try:
-                        text_to_send, kb_rows = render_paginated_page(page, query_override=page.get("query"))
-                    except Exception:
-                        try:
-                            page_query = page.get("query") or ""
-                            content_md = md_to_markdown(page.get("content") or "")
-                            header = f"*Search:* {_escape_markdown(page_query)} — {page.get('total_results') or 0} results\n\n" if page_query else ""
-                            text_to_send = header + (content_md or "")
-                            # minimal keyboard: show parts if available
-                            gp = page.get("group_pages") or []
-                            kb_rows = []
-                            if gp:
-                                row = []
-                                for p in gp[:8]:
-                                    pid = p.get("page_id") if isinstance(p, dict) else p
-                                    row.append({"text": str(len(kb_rows) + len(row) + 1), "callback_data": f"IP|{pid}"})
-                                if row:
-                                    kb_rows.append(row)
-                        except Exception:
-                            text_to_send = page.get("content") or ""
-                            kb_rows = []
-
-                    # If the rendered page is too large for a single Telegram
-                    # message and the callback originated from a chat message
-                    # (not an inline_message_id), send the full content as
-                    # chunked messages to the chat instead of attempting to
-                    # edit the original message in-place. This preserves the
-                    # full result set while avoiding editMessageText size
-                    # limits.
-                    try:
-                        MAX_MSG_CFG = getattr(settings, "MAX_MSG", 4000)
-                    except Exception:
-                        MAX_MSG_CFG = 4000
-                    try:
-                        msg = cq.get("message")
-                        chat_obj = msg.get("chat") if msg else None
-                    except Exception:
-                        chat_obj = None
-
-                    if chat_obj and chat_obj.get("id") and len((text_to_send or "")) > MAX_MSG_CFG:
-                        try:
-                            # Send full Markdown content as separate chat messages
-                            chat_id_target = chat_obj.get("id")
-                            # Send each saved part as its own Markdown chunked message
-                            try:
-                                total_parts_gp = len(gp)
-                                for pi, part in enumerate(gp, start=1):
-                                    part_lines = (part.get("content") or "").splitlines()
-                                    part_header = f"{header} — part {pi}/{total_parts_gp}"
-                                    rm = reply_markup if pi == 1 else None
-                                    await _send_markdown_full(token, chat_id_target, part_header, part_lines, reply_markup=rm)
-                                return
-                            except Exception:
-                                logger.exception("api_search: failed while streaming saved parts per-page")
-                            except Exception:
-                                pass
-                            return JSONResponse(status_code=200, content={"ok": True})
-                        except Exception:
-                            logger.exception("callback: failed to send full page chunks, will attempt edit fallback")
-
-                    # edit the message in place
-                    try:
-                        edit_url = f"https://api.telegram.org/bot{token}/editMessageText"
-                        payload = {"text": text_to_send, "parse_mode": "Markdown"}
-                        # If message exists, target it; otherwise use inline_message_id
-                        msg = cq.get("message")
-                        if msg and msg.get("chat"):
-                            payload["chat_id"] = msg.get("chat", {}).get("id")
-                            payload["message_id"] = msg.get("message_id")
-                        else:
-                            imid = cq.get("inline_message_id")
-                            if imid:
-                                payload["inline_message_id"] = imid
-
-                        if kb_rows:
-                            payload["reply_markup"] = {"inline_keyboard": kb_rows}
-                        async with httpx.AsyncClient() as client:
-                            try:
-                                # Log the outgoing payload (masked by logger sink)
-                                try:
-                                    logger.debug("callback editMessageText request payload: {}", json.dumps(payload, ensure_ascii=False)[:2000])
-                                except Exception:
-                                    logger.debug("callback editMessageText request payload (unserializable)")
-                                resp = await client.post(edit_url, json=payload, timeout=10)
-                            except Exception:
-                                resp = None
-                        try:
-                            if resp is None:
-                                logger.exception("callback edit request failed: no response")
-                            else:
-                                # Log full response body for diagnosis (truncated)
-                                try:
-                                    body_text = resp.text or ""
-                                except Exception:
-                                    body_text = ""
-                                logger.info("callback editMessageText response: status=%s body=%s", resp.status_code, body_text[:800])
-                                if resp.status_code == 200:
-                                    pass
-                                else:
-                                    # Log edit response details for diagnosis
-                                    try:
-                                        logger.debug("callback editMessageText response: status={} body={} request_payload={}", resp.status_code, body_text[:2000], json.dumps(payload, ensure_ascii=False)[:2000])
-                                    except Exception:
-                                        logger.debug("callback editMessageText response: status=%s body=%s", resp.status_code, body_text[:2000])
-
-                                    if payload.get("parse_mode") and resp.status_code == 400 and (
-                                        "can't parse entities" in body_text.lower() or "parse entities" in body_text.lower()
-                                    ):
-                                        try:
-                                            raw_text = payload.get("text", "")
-                                            # First try converting Markdown to HTML and re-send as HTML
-                                            try:
-                                                from app.utils.helpers import md_to_html
-
-                                                try:
-                                                    html_text = md_to_html(raw_text, one_per_line=True)
-                                                except Exception:
-                                                    html_text = None
-                                            except Exception:
-                                                html_text = None
-
-                                            if html_text:
-                                                fallback_html = {}
-                                                if "chat_id" in payload:
-                                                    fallback_html["chat_id"] = payload.get("chat_id")
-                                                if "message_id" in payload:
-                                                    fallback_html["message_id"] = payload.get("message_id")
-                                                if "inline_message_id" in payload:
-                                                    fallback_html["inline_message_id"] = payload.get("inline_message_id")
-                                                fallback_html["text"] = html_text
-                                                fallback_html["parse_mode"] = "HTML"
-                                                if "reply_markup" in payload:
-                                                    fallback_html["reply_markup"] = payload.get("reply_markup")
-                                                try:
-                                                    try:
-                                                        logger.debug("callback editMessageText HTML fallback payload: {}", json.dumps(fallback_html, ensure_ascii=False)[:2000])
-                                                    except Exception:
-                                                        logger.debug("callback editMessageText HTML fallback payload (unserializable)")
-                                                    async with httpx.AsyncClient() as client2:
-                                                        resp2 = await client2.post(edit_url, json=fallback_html, timeout=10)
-                                                    try:
-                                                        logger.debug("callback editMessageText HTML fallback response: status={} body={}", resp2.status_code, (resp2.text or "")[:2000])
-                                                    except Exception:
-                                                        logger.debug("callback editMessageText HTML fallback response logged")
-                                                    if resp2 is not None and resp2.status_code == 200:
-                                                        # success
-                                                        pass
-                                                    else:
-                                                        # Fall back to plain-text label-only edit
-                                                        raise Exception("HTML fallback failed")
-                                                except Exception:
-                                                    # proceed to plain-text fallback below
-                                                    raise
-                                            # If HTML fallback not available or failed, send plain-text labels
-                                            try:
-                                                unescaped = md_to_plain_text(raw_text)
-                                            except Exception:
-                                                unescaped = unescape_for_plain_text(raw_text)
-                                        except Exception:
-                                            try:
-                                                unescaped = md_to_plain_text(payload.get("text", ""))
-                                            except Exception:
-                                                unescaped = payload.get("text", "")
-                                        fallback = {}
-                                        if "chat_id" in payload:
-                                            fallback["chat_id"] = payload.get("chat_id")
-                                        if "message_id" in payload:
-                                            fallback["message_id"] = payload.get("message_id")
-                                        if "inline_message_id" in payload:
-                                            fallback["inline_message_id"] = payload.get("inline_message_id")
-                                        fallback["text"] = unescaped
-                                        if "reply_markup" in payload:
-                                            fallback["reply_markup"] = payload.get("reply_markup")
-                                            try:
-                                                try:
-                                                    logger.debug("callback editMessageText fallback payload: {}", json.dumps(fallback, ensure_ascii=False)[:2000])
-                                                except Exception:
-                                                    logger.debug("callback editMessageText fallback payload (unserializable)")
-                                                async with httpx.AsyncClient() as client2:
-                                                    resp2 = await client2.post(edit_url, json=fallback, timeout=10)
-                                                try:
-                                                    logger.debug("callback editMessageText fallback response: status={} body={}", resp2.status_code, (resp2.text or "")[:2000])
-                                                except Exception:
-                                                    logger.debug("callback editMessageText fallback response logged")
-                                            except Exception:
-                                                logger.exception("callback edit fallback failed")
-                                    else:
-                                        logger.error("editMessageText failed status=%s body=%s", resp.status_code, body_text[:400])
-                        except Exception:
-                            logger.exception("callback edit error handling response")
-                        try:
-                            await _answer_callback(token, cq.get("id"), text="")
-                        except Exception:
-                            pass
-                    except Exception:
-                        try:
-                            await _answer_callback(token, cq.get("id"), text="Unable to load page")
-                        except Exception:
-                            pass
-                    return JSONResponse(status_code=200, content={"ok": True})
-                except Exception:
-                    try:
-                        await _answer_callback(token, cq.get("id"), text="Error")
-                    except Exception:
-                        pass
-                    return JSONResponse(status_code=200, content={"ok": True})
     except Exception:
         # ensure we don't break webhook on callback handling errors
         logger.exception("callback handling error")
@@ -1087,7 +904,7 @@ async def telegram_webhook(token: str, update: dict):
         return {"ok": True}
 
     if cmd == "/help":
-        help_text = "Commands:\n/search <query> — Search files\n/stats — Indexed file counts (owner only)\n/reindex <chat_id> — Backfill chat history (owner only)\n/health — DB health (owner only)"
+        help_text = "Commands:\n/search <query> — Search files\n/stats — Indexed file counts (owner only)\n/reindex <chat_id> — Backfill chat history (owner only)\n/health — DB health (owner only)\n/clear_all — Clear all indexed files (owner only)"
         await _send_tg(token, chat_id, help_text)
         return {"ok": True}
 
@@ -1222,18 +1039,6 @@ async def telegram_webhook(token: str, update: dict):
         except Exception:
             logger.exception("Failed to send clear_all confirmation from API webhook")
         return {"ok": True}
-
-        chat = message.get("chat") or {}
-        chat_id = chat.get("id")
-        if chat_id:
-            tg_url = f"https://api.telegram.org/bot{token}/sendMessage"
-            payload = {"chat_id": chat_id, "text": reply_text, "parse_mode": "MarkdownV2"}
-            async with httpx.AsyncClient() as client:
-                try:
-                    resp = await client.post(tg_url, json=payload, timeout=10)
-                    logger.info("Telegram sendMessage response: status={}, body={}", resp.status_code, resp.text[:400])
-                except Exception as exc:
-                    logger.exception("Failed to POST to Telegram API: {}", exc)
 
     return {"ok": True}
 

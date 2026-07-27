@@ -45,6 +45,7 @@ class Settings:
     TARGET_CHAT_ID: Optional[int]
     LOG_LEVEL: str
     OWNER_ID: Optional[int]
+    BOT_OWNER: Optional[int]
     SEARCH_COOLDOWN: int
     MAX_QUERY_LEN: int
     DELETE_COMMANDS: bool
@@ -62,6 +63,8 @@ class Settings:
     MAX_MSG: int
     # Maximum number of link lines to include per page before hiding extras behind navigation
     MAX_LINKS_PER_PAGE: int
+    # Public URL for webhook self-registration (set to e.g. https://your-service.onrender.com)
+    PUBLIC_URL: Optional[str]
 
 
 _api_creds = _parse_api_credentials()
@@ -79,6 +82,7 @@ settings = Settings(
     MONGO_CONNECT_TIMEOUT_MS=int(os.getenv("MONGO_CONNECT_TIMEOUT_MS", "10000")),
     LOG_LEVEL=os.getenv("LOG_LEVEL", "INFO"),
     OWNER_ID=int(_owner_env) if _owner_env else None,
+    BOT_OWNER=int(_owner_env) if _owner_env else None,
     SEARCH_COOLDOWN=int(os.getenv("SEARCH_COOLDOWN", "3")),
     MAX_QUERY_LEN=int(os.getenv("MAX_QUERY_LEN", "64")),
     DELETE_COMMANDS=(os.getenv("DELETE_COMMANDS", "false").lower() in ("1", "true", "yes")),
@@ -95,6 +99,9 @@ settings = Settings(
     # Prefer new env `BOOK_INDEX_FOLDER` (or lowercase `book_index_folder`) but
     # fall back to the legacy `MEDIA_INDEX_FOLDER` env var for compatibility.
     BOOK_INDEX_FOLDER=os.getenv("BOOK_INDEX_FOLDER", os.getenv("book_index_folder", os.getenv("MEDIA_INDEX_FOLDER", "book_indexes"))),
+    # Public base URL for webhook self-registration (e.g. https://my-service.onrender.com)
+    # Falls back to RENDER_EXTERNAL_URL (auto-set by Render) or custom PUBLIC_URL env var
+    PUBLIC_URL=os.getenv("PUBLIC_URL", os.getenv("RENDER_EXTERNAL_URL", None)),
     # Maximum number of inline result buttons to show per page (others appear only in text)
     MAX_INLINE_RESULTS=int(os.getenv("MAX_INLINE_RESULTS", "8")),
     # Character budget for messages (conservative default below Telegram's hard cap)
