@@ -73,8 +73,15 @@ _owner_env = os.getenv("BOT_OWNER") or os.getenv("OWNER_ID") or os.getenv("owner
 
 settings = Settings(
     API_CREDENTIALS=_api_creds,
-    # Accept either MONGO_URI or MONGODB_URL (common env name in user .env)
-    MONGO_URI=os.getenv("MONGO_URI", os.getenv("MONGODB_URL", "mongodb://localhost:27017/tg_index")),
+    # Accept multiple common env names for the Mongo connection string:
+    # MONGO_URI / MONGODB_URI / MONGODB_URL / DATABASE_URL (plus lowercase
+    # variants used in some .env files). `or`-chain so blank/empty values are
+    # skipped instead of producing an invalid "" URI.
+    MONGO_URI=(os.getenv("MONGO_URI") or os.getenv("mongo_uri")
+               or os.getenv("MONGODB_URI") or os.getenv("mongodb_uri")
+               or os.getenv("MONGODB_URL") or os.getenv("mongodb_url")
+               or os.getenv("DATABASE_URL") or os.getenv("database_url")
+               or "mongodb://localhost:27017/tg_index"),
     # Accept either `DB_NAME` or the older `MONGODB_NAME`/`MONGO_DB_NAME` env names
     DB_NAME=os.getenv("DB_NAME", os.getenv("MONGODB_NAME", os.getenv("MONGO_DB_NAME", "tg_index"))),
     TARGET_CHAT_ID=int(os.getenv("TARGET_CHAT_ID", "0")) if os.getenv("TARGET_CHAT_ID") else None,

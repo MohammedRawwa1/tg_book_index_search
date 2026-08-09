@@ -9,7 +9,10 @@ efficient upserts.
 Usage:
   python scripts/backfill_telethon.py <chat_id> [--thread-id THREAD_ID] [--limit N] [--dry-run]
 
-Requires: TELETHON_API_ID, TELETHON_API_HASH or existing .session file.
+Requires: TELETHON_API_ID (or telethon_api_id / TELEGRAM_APP_ID / API_ID),
+TELETHON_API_HASH (or telethon_api_hash / TELEGRAM_API_HASH / API_HASH), or an
+existing .session file. The Mongo connection string is read from MONGO_URI /
+MONGODB_URI / MONGODB_URL / DATABASE_URL (falling back to app settings).
 """
 
 import argparse
@@ -33,12 +36,48 @@ from app.services.tokenizer import tokenize_filename
 from app.config.settings import settings
 
 
+def _first_env(*names: str):
+    """Return the first set, non-empty env var among the given names."""
+    for name in names:
+        val = os.getenv(name)
+        if val and val.strip():
+            return val.strip()
+    return None
+
+
+def _clean_uri(value: str) -> str:
+    """Strip surrounding whitespace/quotes from an env-provided URI value."""
+    value = (value or "").strip()
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+        value = value[1:-1].strip()
+    return value
+
+
+# Accepted env var names (priority order) for Telethon API credentials
+_API_ID_ENV_NAMES = ("TELETHON_API_ID", "telethon_api_id", "TELEGRAM_APP_ID", "API_ID")
+_API_HASH_ENV_NAMES = ("TELETHON_API_HASH", "telethon_api_hash", "TELEGRAM_API_HASH", "API_HASH")
+# Accepted env var names (priority order) for the MongoDB connection string
+_MONGO_URI_ENV_NAMES = (
+    "MONGO_URI",
+    "mongo_uri",
+    "MONGODB_URI",
+    "mongodb_uri",
+    "MONGODB_URL",
+    "mongodb_url",
+    "DATABASE_URL",
+    "database_url",
+)
+
+
 def _choose_telethon_client():
-    api_id = os.getenv("TELETHON_API_ID") or os.getenv("TELEGRAM_APP_ID")
-    api_hash = os.getenv("TELETHON_API_HASH") or os.getenv("TELEGRAM_API_HASH")
-    session = os.getenv("TELETHON_SESSION") or os.getenv("SESSION_NAME") or "telethon_backfill"
+    api_id = _first_env(*_API_ID_ENV_NAMES)
+    api_hash = _first_env(*_API_HASH_ENV_NAMES)
+    session = _first_env("TELETHON_SESSION", "SESSION_NAME") or "telethon_backfill"
     if not (api_id and api_hash):
-        raise RuntimeError("TELETHON_API_ID and TELETHON_API_HASH must be set in env")
+        raise RuntimeError(
+            "Telethon API credentials missing: set TELETHON_API_ID/telethon_api_id "
+            "and TELETHON_API_HASH/telethon_api_hash in env"
+        )
     try:
         api_id = int(api_id)
     except Exception:
@@ -46,15 +85,27 @@ def _choose_telethon_client():
     return TelegramClient(str(session), api_id, str(api_hash))
 
 
+def _resolve_mongo_uri() -> str:
+    """Resolve the MongoDB connection string from env, falling back to app settings."""
+    value = _first_env(*_MONGO_URI_ENV_NAMES)
+    return _clean_uri(value) if value else settings.MONGO_URI
+
+
 async def run_backfill(chat_id: int, thread_id: int | None, limit: int = 20000, dry_run: bool = False):
     client = _choose_telethon_client()
 
-    mongo = MongoService(settings.MONGO_URI, settings.DB_NAME)
+    mongo = MongoService(_resolve_mongo_uri(), settings.DB_NAME)
     try:
         mongo.connect()
         mongo.ensure_indexes()
     except Exception as exc:
         print("Mongo init failed:", exc)
+        if not mongo.uri.startswith(("mongodb://", "mongodb+srv://")):
+            print(
+                f"Hint: the connection string {mongo.uri!r} is not a valid Mongo URI. "
+                f"Set one of these env vars to a mongodb:// or mongodb+srv:// string: "
+                f"{', '.join(_MONGO_URI_ENV_NAMES)}"
+            )
         return
 
     file_index = FileIndex(mongo.db)
