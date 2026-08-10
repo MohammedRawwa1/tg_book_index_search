@@ -23,13 +23,14 @@ from typing import Dict, Any
 from pymongo import UpdateOne
 
 try:
-    from app.config.settings import settings
+    from app.config.settings import settings, resolve_mongo_uri
     from app.services.mongo import MongoService
     from app.services.search_utils import make_trigrams, TRIGRAM_MAX
     from app.services.tokenizer import tokenize_filename
 except Exception:
     # best-effort imports; fall back to env vars below
     settings = None
+    resolve_mongo_uri = None
     MongoService = None
     make_trigrams = None
     TRIGRAM_MAX = 300
@@ -92,7 +93,11 @@ def main():
     args = parser.parse_args()
 
     # determine Mongo connection
-    MONGO_URI = os.getenv("MONGO_URI")
+    if resolve_mongo_uri is not None:
+        # shared resolver: skips blank values and strips quotes
+        MONGO_URI = resolve_mongo_uri()
+    else:
+        MONGO_URI = os.getenv("MONGO_URI")
     DB_NAME = os.getenv("DB_NAME")
     if not MONGO_URI or not DB_NAME:
         if settings is not None:

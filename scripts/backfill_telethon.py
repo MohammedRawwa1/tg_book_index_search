@@ -9,8 +9,8 @@ efficient upserts.
 Usage:
   python scripts/backfill_telethon.py <chat_id> [--thread-id THREAD_ID] [--limit N] [--dry-run]
 
-Requires: TELETHON_API_ID (or telethon_api_id / TELEGRAM_APP_ID / API_ID),
-TELETHON_API_HASH (or telethon_api_hash / TELEGRAM_API_HASH / API_HASH), or an
+Requires: API_ID (or TELETHON_API_ID / telethon_api_id / TELEGRAM_APP_ID),
+API_HASH (or TELETHON_API_HASH / telethon_api_hash / TELEGRAM_API_HASH), or an
 existing .session file. The Mongo connection string is read from MONGO_URI /
 MONGODB_URI / MONGODB_URL / DATABASE_URL (falling back to app settings).
 """
@@ -33,7 +33,7 @@ from telethon.tl.types import Message
 from app.services.mongo import MongoService
 from app.models.file_index_impl import FileIndex
 from app.services.tokenizer import tokenize_filename
-from app.config.settings import settings
+from app.config.settings import settings, resolve_mongo_uri
 
 
 def _first_env(*names: str):
@@ -45,17 +45,11 @@ def _first_env(*names: str):
     return None
 
 
-def _clean_uri(value: str) -> str:
-    """Strip surrounding whitespace/quotes from an env-provided URI value."""
-    value = (value or "").strip()
-    if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
-        value = value[1:-1].strip()
-    return value
-
-
-# Accepted env var names (priority order) for Telethon API credentials
-_API_ID_ENV_NAMES = ("TELETHON_API_ID", "telethon_api_id", "TELEGRAM_APP_ID", "API_ID")
-_API_HASH_ENV_NAMES = ("TELETHON_API_HASH", "telethon_api_hash", "TELEGRAM_API_HASH", "API_HASH")
+# Accepted env var names (priority order) for Telethon API credentials.
+# API_ID/API_HASH (fully uppercase) are checked first, matching the rest of
+# the app; the Telethon-prefixed names remain as fallbacks.
+_API_ID_ENV_NAMES = ("API_ID", "TELETHON_API_ID", "telethon_api_id", "TELEGRAM_APP_ID")
+_API_HASH_ENV_NAMES = ("API_HASH", "TELETHON_API_HASH", "telethon_api_hash", "TELEGRAM_API_HASH")
 # Accepted env var names (priority order) for the MongoDB connection string
 _MONGO_URI_ENV_NAMES = (
     "MONGO_URI",
@@ -75,8 +69,8 @@ def _choose_telethon_client():
     session = _first_env("TELETHON_SESSION", "SESSION_NAME") or "telethon_backfill"
     if not (api_id and api_hash):
         raise RuntimeError(
-            "Telethon API credentials missing: set TELETHON_API_ID/telethon_api_id "
-            "and TELETHON_API_HASH/telethon_api_hash in env"
+            "Telethon API credentials missing: set API_ID and API_HASH in env "
+            "(or TELETHON_API_ID/TELETHON_API_HASH)"
         )
     try:
         api_id = int(api_id)
@@ -86,9 +80,13 @@ def _choose_telethon_client():
 
 
 def _resolve_mongo_uri() -> str:
-    """Resolve the MongoDB connection string from env, falling back to app settings."""
-    value = _first_env(*_MONGO_URI_ENV_NAMES)
-    return _clean_uri(value) if value else settings.MONGO_URI
+    """Resolve the MongoDB connection string from env, falling back to app settings.
+
+    Delegates to the shared ``app.config.settings.resolve_mongo_uri`` so blank
+    values (e.g. ``mongo_uri=""``) and literal quotes are handled consistently
+    with the rest of the app.
+    """
+    return resolve_mongo_uri()
 
 
 async def run_backfill(chat_id: int, thread_id: int | None, limit: int = 20000, dry_run: bool = False):
