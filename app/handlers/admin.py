@@ -80,10 +80,10 @@ def register_admin_handlers(client: Client, mongo):
     # --- /clear_all ---
     @client.on_message(filters.command("clear_all"))
     async def _clear_all(client: Client, message: Message):
-        logger.info("ENTRY: /clear_all handler triggered. user_id=%s chat_id=%s", message.from_user.id if message.from_user else None, message.chat.id if message.chat else None)
+        logger.info("ENTRY: /clear_all handler triggered. user_id={} chat_id={}", message.from_user.id if message.from_user else None, message.chat.id if message.chat else None)
         try:
             if not _is_owner(message.from_user.id):
-                logger.warning("/clear_all unauthorized access attempt by user_id=%s", message.from_user.id)
+                logger.warning("/clear_all unauthorized access attempt by user_id={}", message.from_user.id)
                 return await message.reply_text("Unauthorized")
 
             kb = InlineKeyboardMarkup(
@@ -96,14 +96,14 @@ def register_admin_handlers(client: Client, mongo):
                 ]
             )
 
-            logger.info("Sending clear_all confirmation menu to chat_id=%s", message.chat.id if message.chat else None)
+            logger.info("Sending clear_all confirmation menu to chat_id={}", message.chat.id if message.chat else None)
             sent = await message.reply_text(
                 "Clear ALL indexed files?\nDelete = safer, Drop = faster.",
                 reply_markup=kb,
             )
-            logger.info("clear_all confirmation menu sent successfully. message_id=%s", sent.message_id if sent else None)
+            logger.info("clear_all confirmation menu sent successfully. message_id={}", sent.message_id if sent else None)
         except Exception as e:
-            logger.exception("CATCH-ALL: Exception in /clear_all handler: %s", e)
+            logger.exception("CATCH-ALL: Exception in /clear_all handler: {}", e)
             await message.reply_text("Error in clear_all handler. Check logs.")
 
     # --- /admin ---
@@ -203,7 +203,7 @@ async def handle_admin_callback(client: Client, cq: CallbackQuery):
                 await cq.answer()
 
         except Exception as e:
-            logger.exception("Clear failed: %s", e)
+            logger.exception("Clear failed: {}", e)
             await cq.answer("Error", show_alert=True)
 
         return
