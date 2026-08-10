@@ -2339,22 +2339,20 @@ async def _send_markdown_full(token: str, chat_id: int, header: str, md_lines_or
                         # send a clickable plaintext fallback replacing Markdown
                         # links with `Label — URL` and removing backslash escapes
                         try:
-                            import re as _re
-                            try:
-                                from app.utils.helpers import chunk_lines_by_char_limit as _chunker, unescape_for_plain_text
-                            except Exception:
-                                _chunker = None
-                                def unescape_for_plain_text(x):
-                                    return x
+                            from app.utils.helpers import chunk_lines_by_char_limit as _chunker
+                        except Exception:
+                            _chunker = None
 
-                            pattern = _re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
                             try:
-                                clickable_lines = [_re.sub(pattern, r"\1 — \2", ln) for ln in full_md.splitlines()]
+                                from app.utils.helpers import md_links_to_clickable
+
+                                # Convert `[Label](URL)` -> `Label — URL` and remove
+                                # Markdown backslash-escapes so plaintext is readable.
+                                # (unescape the whole line so non-link lines also
+                                # lose their Telegram-Markdown backslash escapes)
+                                clickable_lines = [unescape_for_plain_text(md_links_to_clickable(ln)) for ln in full_md.splitlines()]
                             except Exception:
                                 clickable_lines = full_md.splitlines()
-
-                            # Remove Markdown backslash-escapes so plaintext is readable
-                            clickable_lines = [unescape_for_plain_text(ln) for ln in clickable_lines]
 
                             # Chunk these lines to avoid overly large messages
                             if _chunker:
@@ -2701,13 +2699,15 @@ async def public_page(request: Request, page_id: str):
 
             if md_line_refs and has_refs:
                 try:
+                    from app.utils.helpers import extract_md_link_label
+
                     new_html_lines = []
                     for ln, ref in zip(md_lines, md_line_refs):
                         try:
-                            # strip numeric prefix like '1) '
-                            label = re.sub(r'^\s*\d+\)\s*', '', ln)
-                            # remove markdown link if present
-                            label = re.sub(r'\[([^\]]+)\]\([^)]+\)', r"\1", label)
+                            # Extract the visible label from the Markdown link
+                            # (robust to labels containing brackets/parentheses)
+                            # and strip list markers like '1) '.
+                            label = extract_md_link_label(ln)
                             label_esc = html.escape(label)
                             if ref and ref.get("chat_id") and ref.get("message_id"):
                                 s = str(ref.get("chat_id"))
