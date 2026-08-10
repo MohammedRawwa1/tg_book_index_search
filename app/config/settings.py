@@ -36,6 +36,48 @@ def _parse_api_credentials() -> List[Dict[str, Any]]:
     return []
 
 
+# Accepted env var names (priority order) for the MongoDB connection string:
+# uppercase first, then the lowercase variants some .env files use.
+_MONGO_URI_ENV_NAMES = (
+    "MONGO_URI",
+    "mongo_uri",
+    "MONGODB_URI",
+    "mongodb_uri",
+    "MONGODB_URL",
+    "mongodb_url",
+    "DATABASE_URL",
+    "database_url",
+)
+
+_MONGO_URI_DEFAULT = "mongodb://localhost:27017/tg_index"
+
+
+def _strip_uri_quotes(value: str) -> str:
+    """Strip surrounding whitespace and matching quotes from an env-provided value."""
+    value = (value or "").strip()
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+        value = value[1:-1].strip()
+    return value
+
+
+def resolve_mongo_uri() -> str:
+    """Resolve the MongoDB connection string from env.
+
+    - Checks all accepted env names in priority order (MONGO_URI first).
+    - Skips blank / whitespace-only values (e.g. `mongo_uri=""` in a .env file).
+    - Strips surrounding quote characters (e.g. `MONGO_URI='mongodb://...'` or
+      a literal `""` value) so the URI never comes back blank.
+    - Falls back to the local default URI when nothing usable is configured.
+    """
+    for name in _MONGO_URI_ENV_NAMES:
+        raw = os.getenv(name)
+        if raw:
+            cleaned = _strip_uri_quotes(raw)
+            if cleaned:
+                return cleaned
+    return _MONGO_URI_DEFAULT
+
+
 @dataclass
 class Settings:
     API_CREDENTIALS: List[Dict[str, Any]]
@@ -73,15 +115,10 @@ _owner_env = os.getenv("BOT_OWNER") or os.getenv("OWNER_ID") or os.getenv("owner
 
 settings = Settings(
     API_CREDENTIALS=_api_creds,
-    # Accept multiple common env names for the Mongo connection string:
-    # MONGO_URI / MONGODB_URI / MONGODB_URL / DATABASE_URL (plus lowercase
-    # variants used in some .env files). `or`-chain so blank/empty values are
-    # skipped instead of producing an invalid "" URI.
-    MONGO_URI=(os.getenv("MONGO_URI") or os.getenv("mongo_uri")
-               or os.getenv("MONGODB_URI") or os.getenv("mongodb_uri")
-               or os.getenv("MONGODB_URL") or os.getenv("mongodb_url")
-               or os.getenv("DATABASE_URL") or os.getenv("database_url")
-               or "mongodb://localhost:27017/tg_index"),
+    # Mongo connection string resolved from env via resolve_mongo_uri().
+    # Accepts MONGO_URI / MONGODB_URI / MONGODB_URL / DATABASE_URL (plus
+    # lowercase variants); skips blank values and strips surrounding quotes.
+    MONGO_URI=resolve_mongo_uri(),
     # Accept either `DB_NAME` or the older `MONGODB_NAME`/`MONGO_DB_NAME` env names
     DB_NAME=os.getenv("DB_NAME", os.getenv("MONGODB_NAME", os.getenv("MONGO_DB_NAME", "tg_index"))),
     TARGET_CHAT_ID=int(os.getenv("TARGET_CHAT_ID", "0")) if os.getenv("TARGET_CHAT_ID") else None,

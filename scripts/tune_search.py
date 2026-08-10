@@ -26,7 +26,7 @@ import httpx
 from typing import List, Dict, Any
 
 try:
-    from app.config.settings import settings
+    from app.config.settings import settings, resolve_mongo_uri
     from app.services.mongo import MongoService
     from app.services.tokenizer import tokenize_query
     from app.services.search_utils import make_trigrams, trigram_similarity, TRIGRAM_MAX
@@ -90,7 +90,7 @@ def main():
     parser.add_argument("--stream-url", type=str, default=os.getenv("SEARCH_STREAM_URL", "http://127.0.0.1:10000/search/stream"), help="Streaming endpoint URL (NDJSON)")
     args = parser.parse_args()
 
-    MONGO_URI = os.getenv("MONGO_URI")
+    MONGO_URI = resolve_mongo_uri()
     DB_NAME = os.getenv("DB_NAME")
     if not MONGO_URI or not DB_NAME:
         MONGO_URI = MONGO_URI or (settings.MONGO_URI if settings else None)
