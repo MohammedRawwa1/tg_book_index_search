@@ -49,7 +49,12 @@ def _first_env(*names: str):
 # API_ID/API_HASH (fully uppercase) are checked first, matching the rest of
 # the app; the Telethon-prefixed names remain as fallbacks.
 _API_ID_ENV_NAMES = ("API_ID", "TELETHON_API_ID", "telethon_api_id", "TELEGRAM_APP_ID")
-_API_HASH_ENV_NAMES = ("API_HASH", "TELETHON_API_HASH", "telethon_api_hash", "TELEGRAM_API_HASH")
+_API_HASH_ENV_NAMES = (
+    "API_HASH",
+    "TELETHON_API_HASH",
+    "telethon_api_hash",
+    "TELEGRAM_API_HASH",
+)
 # Accepted env var names (priority order) for the MongoDB connection string
 _MONGO_URI_ENV_NAMES = (
     "MONGO_URI",
@@ -89,7 +94,9 @@ def _resolve_mongo_uri() -> str:
     return resolve_mongo_uri()
 
 
-async def run_backfill(chat_id: int, thread_id: int | None, limit: int = 20000, dry_run: bool = False):
+async def run_backfill(
+    chat_id: int, thread_id: int | None, limit: int = 20000, dry_run: bool = False
+):
     client = _choose_telethon_client()
 
     mongo = MongoService(_resolve_mongo_uri(), settings.DB_NAME)
@@ -124,45 +131,71 @@ async def run_backfill(chat_id: int, thread_id: int | None, limit: int = 20000, 
         "pdf,epub,mobi,azw3,azw,cbz,cbr,txt,rtf,doc,docx,odt",
     )
     try:
-        ALLOWED_EXTS = {e.strip().lower() for e in allowed_exts_raw.split(",") if e.strip()}
+        ALLOWED_EXTS = {
+            e.strip().lower() for e in allowed_exts_raw.split(",") if e.strip()
+        }
     except Exception:
-        ALLOWED_EXTS = {"pdf", "epub", "mobi", "azw3", "azw", "txt", "doc", "docx", "odt"}
+        ALLOWED_EXTS = {
+            "pdf",
+            "epub",
+            "mobi",
+            "azw3",
+            "azw",
+            "txt",
+            "doc",
+            "docx",
+            "odt",
+        }
     # Accept any filename-like documents; backfill should index documents (books)
 
     def _extract_filename_from_attachment(attachment, msg):
         # common direct attributes
-        filename = getattr(attachment, "file_name", None) or getattr(attachment, "name", None)
+        filename = getattr(attachment, "file_name", None) or getattr(
+            attachment, "name", None
+        )
         # Telethon Document often stores filename in attributes
-        attrs = getattr(attachment, "attributes", None) or getattr(attachment, "attrs", None)
+        attrs = getattr(attachment, "attributes", None) or getattr(
+            attachment, "attrs", None
+        )
         if not filename and attrs:
             for a in attrs:
-                fname = getattr(a, "file_name", None) or getattr(a, "fileName", None) or getattr(a, "filename", None)
+                fname = (
+                    getattr(a, "file_name", None)
+                    or getattr(a, "fileName", None)
+                    or getattr(a, "filename", None)
+                )
                 if fname:
                     filename = fname
                     break
 
         # try to find a filename-like token in caption/text (any extension)
         if not filename:
-            caption = getattr(msg, "message", None) or getattr(msg, "text", None) or getattr(msg, "caption", None)
+            caption = (
+                getattr(msg, "message", None)
+                or getattr(msg, "text", None)
+                or getattr(msg, "caption", None)
+            )
             if caption:
                 # match any token that looks like name.ext (up to 8-char ext)
-                pattern = r'([\w\-\s\(\)\[\]\.]+\.[A-Za-z0-9]{1,8})'
+                pattern = r"([\w\-\s\(\)\[\]\.]+\.[A-Za-z0-9]{1,8})"
                 m = re.search(pattern, caption, flags=re.IGNORECASE)
                 if m:
                     filename = m.group(1).strip()
 
         # fallback: derive a filename from mime type
         if not filename:
-            mime = getattr(attachment, "mime_type", None) or getattr(attachment, "mime", None)
+            mime = getattr(attachment, "mime_type", None) or getattr(
+                attachment, "mime", None
+            )
             ext = None
-            if mime and '/' in mime:
-                subtype = mime.split('/')[-1].lower()
+            if mime and "/" in mime:
+                subtype = mime.split("/")[-1].lower()
                 # Try to use subtype as extension when reasonable
                 if subtype and len(subtype) <= 8:
-                    if subtype == 'x-matroska':
-                        ext = 'mkv'
-                    elif subtype == 'quicktime':
-                        ext = 'mov'
+                    if subtype == "x-matroska":
+                        ext = "mkv"
+                    elif subtype == "quicktime":
+                        ext = "mov"
                     else:
                         ext = subtype
             if ext:
@@ -187,7 +220,9 @@ async def run_backfill(chat_id: int, thread_id: int | None, limit: int = 20000, 
                     try:
                         if getattr(msg, "reply_to_msg_id", None):
                             # telethon exposes reply_to_msg_id but nested object may be present
-                            if getattr(msg, "reply_to", None) and getattr(msg.reply_to, "reply_to_top_id", None):
+                            if getattr(msg, "reply_to", None) and getattr(
+                                msg.reply_to, "reply_to_top_id", None
+                            ):
                                 rt = msg.reply_to.reply_to_top_id
                     except Exception:
                         rt = None
@@ -223,7 +258,11 @@ async def run_backfill(chat_id: int, thread_id: int | None, limit: int = 20000, 
                 filename = _extract_filename_from_attachment(attachment, msg)
                 # compute extension from discovered filename for indexing
                 try:
-                    ext = (filename.rsplit('.', 1)[1] or "") if filename and '.' in filename else ""
+                    ext = (
+                        (filename.rsplit(".", 1)[1] or "")
+                        if filename and "." in filename
+                        else ""
+                    )
                     ext = ext.lower()
                 except Exception:
                     ext = ""
@@ -244,12 +283,18 @@ async def run_backfill(chat_id: int, thread_id: int | None, limit: int = 20000, 
                 file_id = getattr(attachment, "file_id", None)
                 file_size = getattr(attachment, "file_size", None)
                 duration = getattr(attachment, "duration", None)
-                width = getattr(attachment, "w", None) or getattr(attachment, "width", None)
-                height = getattr(attachment, "h", None) or getattr(attachment, "height", None)
+                width = getattr(attachment, "w", None) or getattr(
+                    attachment, "width", None
+                )
+                height = getattr(attachment, "h", None) or getattr(
+                    attachment, "height", None
+                )
 
                 doc = {
                     "chat_id": int(chat_id),
-                    "message_thread_id": int(thread_id) if thread_id is not None else None,
+                    "message_thread_id": int(thread_id)
+                    if thread_id is not None
+                    else None,
                     "message_id": int(msg.id),
                     "filename": filename,
                     "extension": ext,
@@ -295,7 +340,9 @@ async def run_backfill(chat_id: int, thread_id: int | None, limit: int = 20000, 
 def main():
     parser = argparse.ArgumentParser(description="Telethon backfill for chat/topic")
     parser.add_argument("chat", help="Target chat id or username")
-    parser.add_argument("--thread-id", type=int, default=None, help="Topic/thread id to limit to")
+    parser.add_argument(
+        "--thread-id", type=int, default=None, help="Topic/thread id to limit to"
+    )
     parser.add_argument("--limit", type=int, default=20000)
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
@@ -311,7 +358,9 @@ def main():
     except Exception:
         chat_id = chat
 
-    asyncio.run(run_backfill(chat_id, thread_id=thread_id, limit=limit, dry_run=dry_run))
+    asyncio.run(
+        run_backfill(chat_id, thread_id=thread_id, limit=limit, dry_run=dry_run)
+    )
 
 
 if __name__ == "__main__":

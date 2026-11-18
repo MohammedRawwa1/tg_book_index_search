@@ -8,6 +8,7 @@ Usage:
   python scripts/compute_norm_filenames.py --preview 50  # show first 50 updates without writing
   python scripts/compute_norm_filenames.py --apply --limit 1000  # apply up to 1000 updates
 """
+
 import argparse
 import sys
 import pathlib
@@ -24,9 +25,13 @@ from app.models.file_index_impl import FileIndex
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--preview", type=int, default=0, help="Show sample updates (no write)")
+    parser.add_argument(
+        "--preview", type=int, default=0, help="Show sample updates (no write)"
+    )
     parser.add_argument("--apply", action="store_true", help="Apply updates")
-    parser.add_argument("--limit", type=int, default=0, help="Limit number of updates (0==no limit)")
+    parser.add_argument(
+        "--limit", type=int, default=0, help="Limit number of updates (0==no limit)"
+    )
     args = parser.parse_args()
 
     mongo = MongoService(settings.MONGO_URI, settings.DB_NAME)

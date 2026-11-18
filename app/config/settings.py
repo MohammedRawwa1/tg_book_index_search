@@ -22,11 +22,28 @@ def _parse_api_credentials() -> List[Dict[str, Any]]:
     # fallback to single credentials
     # Accept multiple common env names for API id/hash (some users use TELEGRAM_APP_ID/API_HASH)
     # Accept Telethon-prefixed env names as well for compatibility with user envs
-    api_id = os.getenv("API_ID") or os.getenv("TELETHON_API_ID") or os.getenv("TELEGRAM_APP_ID") or os.getenv("Telegram_APP_ID")
-    api_hash = os.getenv("API_HASH") or os.getenv("TELETHON_API_HASH") or os.getenv("TELEGRAM_API_HASH") or os.getenv("Telegram_API_HASH")
+    api_id = (
+        os.getenv("API_ID")
+        or os.getenv("TELETHON_API_ID")
+        or os.getenv("TELEGRAM_APP_ID")
+        or os.getenv("Telegram_APP_ID")
+    )
+    api_hash = (
+        os.getenv("API_HASH")
+        or os.getenv("TELETHON_API_HASH")
+        or os.getenv("TELEGRAM_API_HASH")
+        or os.getenv("Telegram_API_HASH")
+    )
     bot_token = os.getenv("BOT_TOKEN")
     if api_id and api_hash:
-        return [{"name": "default", "api_id": api_id, "api_hash": api_hash, "bot_token": bot_token}]
+        return [
+            {
+                "name": "default",
+                "api_id": api_id,
+                "api_hash": api_hash,
+                "bot_token": bot_token,
+            }
+        ]
 
     # Accept a single BOT_TOKEN (webhook-only deployments) as a minimal credential
     # entry so webhook handlers that only need the token can operate.
@@ -120,8 +137,12 @@ settings = Settings(
     # lowercase variants); skips blank values and strips surrounding quotes.
     MONGO_URI=resolve_mongo_uri(),
     # Accept either `DB_NAME` or the older `MONGODB_NAME`/`MONGO_DB_NAME` env names
-    DB_NAME=os.getenv("DB_NAME", os.getenv("MONGODB_NAME", os.getenv("MONGO_DB_NAME", "tg_index"))),
-    TARGET_CHAT_ID=int(os.getenv("TARGET_CHAT_ID", "0")) if os.getenv("TARGET_CHAT_ID") else None,
+    DB_NAME=os.getenv(
+        "DB_NAME", os.getenv("MONGODB_NAME", os.getenv("MONGO_DB_NAME", "tg_index"))
+    ),
+    TARGET_CHAT_ID=int(os.getenv("TARGET_CHAT_ID", "0"))
+    if os.getenv("TARGET_CHAT_ID")
+    else None,
     # Mongo connection timeout in milliseconds for server selection/ping
     MONGO_CONNECT_TIMEOUT_MS=int(os.getenv("MONGO_CONNECT_TIMEOUT_MS", "10000")),
     LOG_LEVEL=os.getenv("LOG_LEVEL", "INFO"),
@@ -129,7 +150,9 @@ settings = Settings(
     BOT_OWNER=int(_owner_env) if _owner_env else None,
     SEARCH_COOLDOWN=int(os.getenv("SEARCH_COOLDOWN", "3")),
     MAX_QUERY_LEN=int(os.getenv("MAX_QUERY_LEN", "64")),
-    DELETE_COMMANDS=(os.getenv("DELETE_COMMANDS", "false").lower() in ("1", "true", "yes")),
+    DELETE_COMMANDS=(
+        os.getenv("DELETE_COMMANDS", "false").lower() in ("1", "true", "yes")
+    ),
     TELEGRAPH_DB=os.getenv("TELEGRAPH_DB", "book_db"),
     TELEGRAPH_API_TOKEN=os.getenv("TELEGRAPH_API_TOKEN", None),
     DIAG_SECRET=os.getenv("DIAG_SECRET", None),
@@ -142,7 +165,10 @@ settings = Settings(
     # Folder to write markdown exports (best-effort; may be ephemeral on some hosts)
     # Prefer new env `BOOK_INDEX_FOLDER` (or lowercase `book_index_folder`) but
     # fall back to the legacy `MEDIA_INDEX_FOLDER` env var for compatibility.
-    BOOK_INDEX_FOLDER=os.getenv("BOOK_INDEX_FOLDER", os.getenv("book_index_folder", os.getenv("MEDIA_INDEX_FOLDER", "book_indexes"))),
+    BOOK_INDEX_FOLDER=os.getenv(
+        "BOOK_INDEX_FOLDER",
+        os.getenv("book_index_folder", os.getenv("MEDIA_INDEX_FOLDER", "book_indexes")),
+    ),
     # Public base URL for webhook self-registration (e.g. https://my-service.onrender.com)
     # Falls back to RENDER_EXTERNAL_URL (auto-set by Render) or custom PUBLIC_URL env var
     PUBLIC_URL=os.getenv("PUBLIC_URL", os.getenv("RENDER_EXTERNAL_URL", None)),

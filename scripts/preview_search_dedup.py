@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Quick search preview script to show deduped results and norm_filename."""
+
 import sys
 import pathlib
 import json
@@ -23,13 +24,18 @@ def main():
     res = fi.search_with_ranking(tokens, query=q, page=1, per_page=50)
     print(f"Query: {q} — total deduped results: {res.get('total')}")
     for r in res.get("results", []):
-        print(json.dumps({
-            "filename": r.get("filename"),
-            "norm_filename": r.get("norm_filename"),
-            "chat_id": r.get("chat_id"),
-            "message_id": r.get("message_id"),
-            "_score": r.get("_score"),
-        }, default=str))
+        print(
+            json.dumps(
+                {
+                    "filename": r.get("filename"),
+                    "norm_filename": r.get("norm_filename"),
+                    "chat_id": r.get("chat_id"),
+                    "message_id": r.get("message_id"),
+                    "_score": r.get("_score"),
+                },
+                default=str,
+            )
+        )
 
 
 if __name__ == "__main__":

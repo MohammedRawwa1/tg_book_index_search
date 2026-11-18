@@ -9,6 +9,7 @@ Usage:
 This script computes a normalized filename using the same logic as `FileIndex._normalize_filename`.
 It will set `norm_filename` for processed docs before deleting duplicates.
 """
+
 import argparse
 import sys
 import pathlib
@@ -26,11 +27,27 @@ from datetime import datetime
 
 
 def parse_args():
-    p = argparse.ArgumentParser(description="Delete duplicate file docs by normalized filename")
-    p.add_argument("--preview", type=int, default=0, help="Show up to N sample duplicate groups (no deletes)")
+    p = argparse.ArgumentParser(
+        description="Delete duplicate file docs by normalized filename"
+    )
+    p.add_argument(
+        "--preview",
+        type=int,
+        default=0,
+        help="Show up to N sample duplicate groups (no deletes)",
+    )
     p.add_argument("--delete", action="store_true", help="Perform deletion")
-    p.add_argument("--yes", action="store_true", help="Skip interactive confirmation when --delete is used")
-    p.add_argument("--limit", type=int, default=0, help="Limit number of documents to process (0=all)")
+    p.add_argument(
+        "--yes",
+        action="store_true",
+        help="Skip interactive confirmation when --delete is used",
+    )
+    p.add_argument(
+        "--limit",
+        type=int,
+        default=0,
+        help="Limit number of documents to process (0=all)",
+    )
     return p.parse_args()
 
 
@@ -58,7 +75,15 @@ def main():
 
     print("Scanning documents to compute normalized filename and find duplicates...")
 
-    projection = {"_id": 1, "chat_id": 1, "filename": 1, "norm_filename": 1, "title_tokens": 1, "message_id": 1, "timestamp": 1}
+    projection = {
+        "_id": 1,
+        "chat_id": 1,
+        "filename": 1,
+        "norm_filename": 1,
+        "title_tokens": 1,
+        "message_id": 1,
+        "timestamp": 1,
+    }
     cursor = coll.find({}, projection=projection)
 
     groups = {}
@@ -106,8 +131,22 @@ def main():
                 break
             print("---")
             print(f"chat_id={chat_id} norm='{norm}' group_size={len(docs)}")
-            for dd in sorted(docs, key=lambda x: (to_timestamp_val(x.get("timestamp")), int(x.get("message_id") or 0)), reverse=True):
-                print({"_id": str(dd.get("_id")), "message_id": dd.get("message_id"), "filename": dd.get("filename"), "timestamp": dd.get("timestamp")})
+            for dd in sorted(
+                docs,
+                key=lambda x: (
+                    to_timestamp_val(x.get("timestamp")),
+                    int(x.get("message_id") or 0),
+                ),
+                reverse=True,
+            ):
+                print(
+                    {
+                        "_id": str(dd.get("_id")),
+                        "message_id": dd.get("message_id"),
+                        "filename": dd.get("filename"),
+                        "timestamp": dd.get("timestamp"),
+                    }
+                )
             i += 1
 
     if not args.delete:
@@ -126,7 +165,9 @@ def main():
     for (chat_id, norm), docs in groups.items():
         for d in docs:
             if (d.get("norm_filename") or "") != norm:
-                updates.append(UpdateOne({"_id": d.get("_id")}, {"$set": {"norm_filename": norm}}))
+                updates.append(
+                    UpdateOne({"_id": d.get("_id")}, {"$set": {"norm_filename": norm}})
+                )
 
     applied_updates = 0
     try:
@@ -147,7 +188,14 @@ def main():
     to_delete_ids = []
     for (chat_id, norm), docs in dup_groups.items():
         # sort by timestamp desc then message_id desc -> keep first
-        sorted_docs = sorted(docs, key=lambda x: (to_timestamp_val(x.get("timestamp")), int(x.get("message_id") or 0)), reverse=True)
+        sorted_docs = sorted(
+            docs,
+            key=lambda x: (
+                to_timestamp_val(x.get("timestamp")),
+                int(x.get("message_id") or 0),
+            ),
+            reverse=True,
+        )
         keep = sorted_docs[0]
         to_delete = [d.get("_id") for d in sorted_docs[1:]]
         to_delete_ids.extend(to_delete)
@@ -155,6 +203,7 @@ def main():
     deleted_count = 0
     if to_delete_ids:
         from bson import ObjectId
+
         BATCH = 1000
         for i in range(0, len(to_delete_ids), BATCH):
             batch = to_delete_ids[i : i + BATCH]
@@ -167,11 +216,18 @@ def main():
     print(f"Deleted {deleted_count} documents from duplicate groups.")
 
     # Step 3: ensure remaining documents have norm_filename populated
-    print("Running full normalization pass to populate any remaining `norm_filename` fields (may take a while)...")
+    print(
+        "Running full normalization pass to populate any remaining `norm_filename` fields (may take a while)..."
+    )
     # Call existing migration script to populate remaining norm_filename values
     try:
         import subprocess
-        subprocess.Popen([sys.executable, "scripts/compute_norm_filenames.py", "--apply"], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+        subprocess.Popen(
+            [sys.executable, "scripts/compute_norm_filenames.py", "--apply"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
         print("Started `compute_norm_filenames.py --apply` in background.")
     except Exception as e:
         print("Failed to start normalization script:", e)

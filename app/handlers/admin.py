@@ -2,7 +2,12 @@ import asyncio
 from typing import Optional
 
 from pyrogram import Client, filters
-from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
+from pyrogram.types import (
+    Message,
+    InlineKeyboardMarkup,
+    InlineKeyboardButton,
+    CallbackQuery,
+)
 
 from app.config.settings import settings
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -80,10 +85,17 @@ def register_admin_handlers(client: Client, mongo):
     # --- /clear_all ---
     @client.on_message(filters.command("clear_all"))
     async def _clear_all(client: Client, message: Message):
-        logger.info("ENTRY: /clear_all handler triggered. user_id={} chat_id={}", message.from_user.id if message.from_user else None, message.chat.id if message.chat else None)
+        logger.info(
+            "ENTRY: /clear_all handler triggered. user_id={} chat_id={}",
+            message.from_user.id if message.from_user else None,
+            message.chat.id if message.chat else None,
+        )
         try:
             if not _is_owner(message.from_user.id):
-                logger.warning("/clear_all unauthorized access attempt by user_id={}", message.from_user.id)
+                logger.warning(
+                    "/clear_all unauthorized access attempt by user_id={}",
+                    message.from_user.id,
+                )
                 return await message.reply_text("Unauthorized")
 
             kb = InlineKeyboardMarkup(
@@ -96,12 +108,18 @@ def register_admin_handlers(client: Client, mongo):
                 ]
             )
 
-            logger.info("Sending clear_all confirmation menu to chat_id={}", message.chat.id if message.chat else None)
+            logger.info(
+                "Sending clear_all confirmation menu to chat_id={}",
+                message.chat.id if message.chat else None,
+            )
             sent = await message.reply_text(
                 "Clear ALL indexed files?\nDelete = safer, Drop = faster.",
                 reply_markup=kb,
             )
-            logger.info("clear_all confirmation menu sent successfully. message_id={}", sent.message_id if sent else None)
+            logger.info(
+                "clear_all confirmation menu sent successfully. message_id={}",
+                sent.message_id if sent else None,
+            )
         except Exception as e:
             logger.exception("CATCH-ALL: Exception in /clear_all handler: {}", e)
             await message.reply_text("Error in clear_all handler. Check logs.")
@@ -164,7 +182,9 @@ async def handle_admin_callback(client: Client, cq: CallbackQuery):
                             pass
                     performed = True
                 except Exception:
-                    logger.exception("Admin clear: attached mongo delete/drop failed, will fallback to async client")
+                    logger.exception(
+                        "Admin clear: attached mongo delete/drop failed, will fallback to async client"
+                    )
 
             if not performed:
                 # Fallback: create a temporary AsyncIOMotorClient and perform action
@@ -189,7 +209,9 @@ async def handle_admin_callback(client: Client, cq: CallbackQuery):
                         pass
                     performed = True
                 except Exception:
-                    logger.exception("Admin clear: fallback AsyncIOMotorClient operation failed")
+                    logger.exception(
+                        "Admin clear: fallback AsyncIOMotorClient operation failed"
+                    )
 
             # Report results to user
             if action == "delete":
@@ -244,7 +266,5 @@ async def handle_admin_callback(client: Client, cq: CallbackQuery):
         total = files.count_documents({})
         dups = files.count_documents({"is_duplicate": True})
 
-        await cq.message.reply_text(
-            f"Total: {total}\nDuplicates: {dups}"
-        )
+        await cq.message.reply_text(f"Total: {total}\nDuplicates: {dups}")
         await cq.answer()

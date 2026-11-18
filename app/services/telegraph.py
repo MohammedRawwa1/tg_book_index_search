@@ -23,13 +23,30 @@ class AsyncTelegraphStore:
     def __init__(self, motor_client):
         self.client = motor_client
 
-    async def save_markdown_page(self, query: str, md_text: str, tokens: list, created_by: Optional[int] = None) -> Dict[str, Any]:
+    async def save_markdown_page(
+        self, query: str, md_text: str, tokens: list, created_by: Optional[int] = None
+    ) -> Dict[str, Any]:
         db_name = getattr(settings, "TELEGRAPH_DB", "book_db")
         db = self.client[db_name]
         col = db.get_collection("telegraph_pages")
         # Ensure md_text refers only to book/file types. Filter to common
         # document/ebook extensions so pages focus on book links.
-        BOOK_EXTS = (".pdf", ".epub", ".mobi", ".azw3", ".azw", ".azw4", ".djvu", ".txt", ".docx", ".doc", ".odt", ".fb2", ".rtf", ".pdb")
+        BOOK_EXTS = (
+            ".pdf",
+            ".epub",
+            ".mobi",
+            ".azw3",
+            ".azw",
+            ".azw4",
+            ".djvu",
+            ".txt",
+            ".docx",
+            ".doc",
+            ".odt",
+            ".fb2",
+            ".rtf",
+            ".pdb",
+        )
         try:
             lines = (md_text or "").splitlines()
             vid_lines = []

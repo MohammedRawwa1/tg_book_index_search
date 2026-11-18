@@ -1,4 +1,5 @@
 """Indexer handlers for live and history indexing."""
+
 from pyrogram import Client, filters
 from pyrogram.types import Message
 import os
@@ -19,14 +20,20 @@ def register_indexer(client: Client, mongo):
     limiter = RateLimiter()
     # Config: allow indexing of video attachments and whether to skip channel/sender_chat posts
     allow_video = os.getenv("INDEX_VIDEO", "false").lower() in ("1", "true", "yes")
-    skip_sender_chat = os.getenv("SKIP_SENDER_CHAT", "true").lower() in ("1", "true", "yes")
+    skip_sender_chat = os.getenv("SKIP_SENDER_CHAT", "true").lower() in (
+        "1",
+        "true",
+        "yes",
+    )
     # Allowed document extensions (comma separated). Default = common ebook/doc formats.
     allowed_exts_raw = os.getenv(
         "ALLOWED_DOC_EXTENSIONS",
         "pdf,epub,mobi,azw3,azw,cbz,cbr,txt,rtf,doc,docx,odt",
     )
     try:
-        ALLOWED_EXTS = [e.strip().lower() for e in allowed_exts_raw.split(",") if e.strip()]
+        ALLOWED_EXTS = [
+            e.strip().lower() for e in allowed_exts_raw.split(",") if e.strip()
+        ]
     except Exception:
         ALLOWED_EXTS = ["pdf", "epub", "mobi", "azw3", "azw", "txt", "doc", "docx"]
 
@@ -34,7 +41,9 @@ def register_indexer(client: Client, mongo):
     async def _on_message(client: Client, message: Message):
         # Skip messages sent by bots (chatbots/automated accounts)
         try:
-            if getattr(message, "from_user", None) and getattr(message.from_user, "is_bot", False):
+            if getattr(message, "from_user", None) and getattr(
+                message.from_user, "is_bot", False
+            ):
                 return
         except Exception:
             pass
@@ -68,10 +77,14 @@ def register_indexer(client: Client, mongo):
         duration = getattr(attachment, "duration", None)
         width = getattr(attachment, "width", None)
         height = getattr(attachment, "height", None)
-        codec = getattr(attachment, "mime_type", None) or getattr(attachment, "mime", None)
+        codec = getattr(attachment, "mime_type", None) or getattr(
+            attachment, "mime", None
+        )
         # attempt to capture thumbnail file_id when available
         thumbnail = None
-        thumb_obj = getattr(attachment, "thumb", None) or getattr(attachment, "thumbnail", None)
+        thumb_obj = getattr(attachment, "thumb", None) or getattr(
+            attachment, "thumbnail", None
+        )
         if thumb_obj:
             try:
                 thumbnail = getattr(thumb_obj, "file_id", None)
@@ -110,7 +123,9 @@ def register_indexer(client: Client, mongo):
     async def _on_edit(client: Client, message: Message):
         # Skip edits from bots
         try:
-            if getattr(message, "from_user", None) and getattr(message.from_user, "is_bot", False):
+            if getattr(message, "from_user", None) and getattr(
+                message.from_user, "is_bot", False
+            ):
                 return
         except Exception:
             pass
@@ -146,9 +161,13 @@ def register_indexer(client: Client, mongo):
         duration = getattr(attachment, "duration", None)
         width = getattr(attachment, "width", None)
         height = getattr(attachment, "height", None)
-        codec = getattr(attachment, "mime_type", None) or getattr(attachment, "mime", None)
+        codec = getattr(attachment, "mime_type", None) or getattr(
+            attachment, "mime", None
+        )
         thumbnail = None
-        thumb_obj = getattr(attachment, "thumb", None) or getattr(attachment, "thumbnail", None)
+        thumb_obj = getattr(attachment, "thumb", None) or getattr(
+            attachment, "thumbnail", None
+        )
         if thumb_obj:
             try:
                 thumbnail = getattr(thumb_obj, "file_id", None)
@@ -182,7 +201,15 @@ def register_indexer(client: Client, mongo):
         )
 
 
-async def backfill_history(client: Client, mongo, target_chat_id: int, limit: int = 100000, dry_run: bool = False, resume: bool = True, thread_id: int | None = None):
+async def backfill_history(
+    client: Client,
+    mongo,
+    target_chat_id: int,
+    limit: int = 100000,
+    dry_run: bool = False,
+    resume: bool = True,
+    thread_id: int | None = None,
+):
     """Simple history backfill that yields messages and indexes them.
 
     This is resumable by keeping track of last processed message id in a separate collection.
@@ -220,7 +247,10 @@ async def backfill_history(client: Client, mongo, target_chat_id: int, limit: in
             try:
                 async for d in client.get_dialogs(limit=1000):
                     try:
-                        if getattr(d.chat, "id", None) == target_chat_id or getattr(d.chat, "id", None) == peer_id:
+                        if (
+                            getattr(d.chat, "id", None) == target_chat_id
+                            or getattr(d.chat, "id", None) == peer_id
+                        ):
                             found = d.chat
                             break
                     except Exception:
@@ -254,7 +284,11 @@ async def backfill_history(client: Client, mongo, target_chat_id: int, limit: in
     except Exception:
         allow_video = True
     try:
-        skip_sender_chat = os.getenv("SKIP_SENDER_CHAT", "true").lower() in ("1", "true", "yes")
+        skip_sender_chat = os.getenv("SKIP_SENDER_CHAT", "true").lower() in (
+            "1",
+            "true",
+            "yes",
+        )
     except Exception:
         skip_sender_chat = True
     # Define ALLOWED_EXTS locally for backfill (same env var as register_indexer)
@@ -263,7 +297,9 @@ async def backfill_history(client: Client, mongo, target_chat_id: int, limit: in
             "ALLOWED_DOC_EXTENSIONS",
             "pdf,epub,mobi,azw3,azw,cbz,cbr,txt,rtf,doc,docx,odt",
         )
-        ALLOWED_EXTS = [e.strip().lower() for e in allowed_exts_raw.split(",") if e.strip()]
+        ALLOWED_EXTS = [
+            e.strip().lower() for e in allowed_exts_raw.split(",") if e.strip()
+        ]
     except Exception:
         ALLOWED_EXTS = ["pdf", "epub", "mobi", "azw3", "azw", "txt", "doc", "docx"]
 
@@ -469,10 +505,14 @@ async def backfill_history(client: Client, mongo, target_chat_id: int, limit: in
     for msg in reversed(pending):
         stats["scanned"] += 1
         msg_id = getattr(msg, "message_id", getattr(msg, "id", None))
-        chat_id_val = getattr(msg.chat, "id", None) if getattr(msg, "chat", None) else None
+        chat_id_val = (
+            getattr(msg.chat, "id", None) if getattr(msg, "chat", None) else None
+        )
         # Skip messages from bots so we don't index chatbot media
         try:
-            if getattr(msg, "from_user", None) and getattr(msg.from_user, "is_bot", False):
+            if getattr(msg, "from_user", None) and getattr(
+                msg.from_user, "is_bot", False
+            ):
                 stats["skipped_bot"] += 1
                 continue
         except Exception:
@@ -490,10 +530,14 @@ async def backfill_history(client: Client, mongo, target_chat_id: int, limit: in
         attachment = None
         is_video_doc = False
         if doc:
-            doc_mime = (getattr(doc, "mime_type", None) or getattr(doc, "mime", None) or "").lower()
+            doc_mime = (
+                getattr(doc, "mime_type", None) or getattr(doc, "mime", None) or ""
+            ).lower()
             doc_name = (getattr(doc, "file_name", None) or "").lower()
             try:
-                if doc_mime.startswith("video/") or doc_name.endswith((".mp4", ".mkv", ".webm", ".mov", ".avi", ".flv", ".mpeg", ".mpg")):
+                if doc_mime.startswith("video/") or doc_name.endswith(
+                    (".mp4", ".mkv", ".webm", ".mov", ".avi", ".flv", ".mpeg", ".mpg")
+                ):
                     is_video_doc = True
             except Exception:
                 is_video_doc = False
@@ -529,9 +573,13 @@ async def backfill_history(client: Client, mongo, target_chat_id: int, limit: in
         duration = getattr(attachment, "duration", None)
         width = getattr(attachment, "width", None)
         height = getattr(attachment, "height", None)
-        codec = getattr(attachment, "mime_type", None) or getattr(attachment, "mime", None)
+        codec = getattr(attachment, "mime_type", None) or getattr(
+            attachment, "mime", None
+        )
         thumbnail = None
-        thumb_obj = getattr(attachment, "thumb", None) or getattr(attachment, "thumbnail", None)
+        thumb_obj = getattr(attachment, "thumb", None) or getattr(
+            attachment, "thumbnail", None
+        )
         if thumb_obj:
             try:
                 thumbnail = getattr(thumb_obj, "file_id", None)
@@ -543,7 +591,9 @@ async def backfill_history(client: Client, mongo, target_chat_id: int, limit: in
 
         doc = {
             "chat_id": int(chat_id_val) if chat_id_val is not None else None,
-            "message_thread_id": int(msg.message_thread_id) if getattr(msg, "message_thread_id", None) is not None else None,
+            "message_thread_id": int(msg.message_thread_id)
+            if getattr(msg, "message_thread_id", None) is not None
+            else None,
             "message_id": int(msg_id) if msg_id is not None else None,
             "filename": filename,
             "extension": (filename.split(".")[-1] if "." in filename else ""),
@@ -570,6 +620,7 @@ async def backfill_history(client: Client, mongo, target_chat_id: int, limit: in
     await _flush_batch()
 
     from app.utils.logger import logger
+
     logger.info(
         "Backfill complete for {}: scanned={} indexed={} skipped_no_book={} skipped_no_filename={} skipped_bot={} skipped_sender_chat={} skipped_video={}",
         target_chat_id,
