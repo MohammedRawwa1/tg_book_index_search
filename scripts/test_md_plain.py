@@ -7,6 +7,7 @@ Covers the filename patterns that used to break the Telegraph HTML view
 other Markdown special characters must always be preserved literally and
 must always produce a clickable anchor.
 """
+
 import os
 import sys
 
@@ -43,7 +44,7 @@ nasty = [
 ]
 for ln in nasty:
     out = md_to_html(ln, one_per_line=True)
-    ok = 'href=' in out
+    ok = "href=" in out
     print(f"[{'OK' if ok else 'FAIL'}] {out.strip()}")
     assert ok, f"md_to_html failed to produce an anchor for: {ln}"
 
@@ -53,12 +54,20 @@ print(md_to_markdown("1) [Tom [Br].mp4](https://t.me/c/1/2)"))
 
 print()
 print("=== extract_md_link_label ===")
-for ln in ["1) [Tom [Part2].mp4](https://t.me/c/1/2)", "- [Book (1).pdf](u)", "5) plain filename.txt"]:
+for ln in [
+    "1) [Tom [Part2].mp4](https://t.me/c/1/2)",
+    "- [Book (1).pdf](u)",
+    "5) plain filename.txt",
+]:
     print(f"{ln!r} -> {extract_md_link_label(ln)!r}")
 
 print()
 print("=== normalize_bracket_links ===")
-print(normalize_bracket_links("[Some Book] https://t.me/c/123/460\n[Tom [Part]] https://t.me/c/123/461"))
+print(
+    normalize_bracket_links(
+        "[Some Book] https://t.me/c/123/460\n[Tom [Part]] https://t.me/c/123/461"
+    )
+)
 
 print()
 print("=== md_links_to_clickable ===")

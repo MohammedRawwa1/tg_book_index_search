@@ -7,6 +7,7 @@ Usage:
 
 This script reads DB settings from `app.config.settings` which in turn loads `.env`.
 """
+
 import argparse
 import sys
 import pathlib
@@ -44,9 +45,17 @@ def build_query():
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--preview", type=int, default=10, help="How many example docs to show")
-    parser.add_argument("--delete", action="store_true", help="Delete matching documents (irreversible)")
-    parser.add_argument("--yes", action="store_true", help="Skip interactive confirmation when --delete is provided")
+    parser.add_argument(
+        "--preview", type=int, default=10, help="How many example docs to show"
+    )
+    parser.add_argument(
+        "--delete", action="store_true", help="Delete matching documents (irreversible)"
+    )
+    parser.add_argument(
+        "--yes",
+        action="store_true",
+        help="Skip interactive confirmation when --delete is provided",
+    )
     args = parser.parse_args()
 
     uri = settings.MONGO_URI
@@ -73,7 +82,22 @@ def main():
 
     print(f"Showing up to {args.preview} sample documents:")
     try:
-        cursor = coll.find(q, {"_id": 1, "chat_id": 1, "message_id": 1, "filename": 1, "extension": 1, "codec": 1, "timestamp": 1}).sort("timestamp", -1).limit(args.preview)
+        cursor = (
+            coll.find(
+                q,
+                {
+                    "_id": 1,
+                    "chat_id": 1,
+                    "message_id": 1,
+                    "filename": 1,
+                    "extension": 1,
+                    "codec": 1,
+                    "timestamp": 1,
+                },
+            )
+            .sort("timestamp", -1)
+            .limit(args.preview)
+        )
         for d in cursor:
             pprint(d)
     except Exception as e:

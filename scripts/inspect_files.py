@@ -2,6 +2,7 @@
 """Dump a few sample documents from the files collection for inspection.
 Usage: python scripts/inspect_files.py --limit 10
 """
+
 import sys
 import pathlib
 
@@ -26,10 +27,10 @@ args = parser.parse_args()
 
 client = MongoClient(settings.MONGO_URI, serverSelectionTimeoutMS=5000)
 db = client[settings.DB_NAME]
-coll = db.get_collection('files')
+coll = db.get_collection("files")
 
 print("Total docs in files collection (approx):", coll.estimated_document_count())
 
-for d in coll.find({}).sort('timestamp', -1).limit(args.limit):
+for d in coll.find({}).sort("timestamp", -1).limit(args.limit):
     pprint(d)
-    print('-'*80)
+    print("-" * 80)
