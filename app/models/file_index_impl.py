@@ -4,6 +4,7 @@ import re
 import os
 import asyncio
 from app.services.search_utils import make_trigrams, TRIGRAM_MAX
+from app.services.textnorm import normalize_text
 from app.services.relevance import (
     DEFAULT_MIN_TIER,
     MIN_RESULTS,
@@ -53,6 +54,28 @@ class FileIndex:
             self.CANDIDATE_LIMIT = int(os.getenv("RANK_CANDIDATE_LIMIT", CANDIDATE_LIMIT))
         except Exception:
             self.CANDIDATE_LIMIT = CANDIDATE_LIMIT
+
+    def _normalize_filename(self, filename: str) -> str:
+        """Return a normalized filename string used for deduplication/search.
+
+        Normalization steps:
+        - Lowercase
+        - Strip extension
+        - Replace common separators and non-alnum with single spaces
+        - Collapse multiple spaces
+        """
+        if not filename:
+            return ""
+        try:
+            s = str(filename)
+        except Exception:
+            s = filename or ""
+        # remove trailing extension
+        if "." in s:
+            s = s.rsplit(".", 1)[0]
+        # case-fold, fold Arabic variants, keep words of every script and
+        # collapse separators to single spaces
+        return normalize_text(s)
 
     async def upsert_file(
         self,
