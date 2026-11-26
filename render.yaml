@@ -28,8 +28,11 @@ services:
       # PUBLIC_URL is left unset on purpose: the code falls back to
       # RENDER_EXTERNAL_URL, which Render keeps in sync with the service. A
       # manually pinned URL goes stale and makes the bot silently deaf.
+      # Must be the database the books are actually indexed into (book_bot,
+      # same as the .env). book_indexer is empty, so a service started with it
+      # answers every search with zero results.
       - key: "DB_NAME"
-        value: "book_indexer"
+        value: "book_bot"
       - key: "LOG_LEVEL"
         value: "INFO"
       - key: "BACKFILL_AUTO"

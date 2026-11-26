@@ -28,10 +28,17 @@ from app.services.relevance import (
     classify_match,
     compute_search_score,
     log_search_quality,
+    promote_family_matches,
     resolve_min_tier,
     tier_priority,
 )
-from app.services.morphology import fold, variant_patterns
+from app.services.morphology import (
+    family_prefix_terms,
+    fold,
+    prefix_patterns,
+    variant_patterns,
+)
+from app.services.search_utils import TRIGRAM_MAX, make_trigrams, trigram_similarity
 import sys
 import httpx
 import html
@@ -1453,6 +1460,27 @@ async def _process_search_and_send(token: str, chat_id: int, query: str) -> None
     else:
         results = res.get("results", [])
         total = res.get("total", 0)
+        # api_search pages at 50 rows, so a query with more hits rendered a
+        # "N results - part 1/2" header while only the first 50 rows were ever
+        # listed (hits 51..N silently vanished). Pull the full set with the same
+        # per_page the internal-page builder uses and let the chunker split it.
+        try:
+            if total and total > len(results):
+                full_res = await api_search(
+                    q=query,
+                    page=1,
+                    per_page=max(int(total or 0), 5000),
+                    strict=False,
+                    allow_broad=False,
+                )
+                if isinstance(full_res, dict) and full_res.get("results"):
+                    results = full_res["results"]
+                    total = full_res.get("total") or len(results)
+        except Exception:
+            logger.exception(
+                "_process_search_and_send: full result fetch failed for query={}",
+                query,
+            )
         if not results:
             reply_text = t(
                 "results_none_for", query=_escape_markdown(query), text=query
@@ -1928,7 +1956,7 @@ async def _process_search_and_send(token: str, chat_id: int, query: str) -> None
                             full_res = await api_search(
                                 q=query,
                                 page=1,
-                                per_page=5000,
+                                per_page=max(int(total or 0), 5000),
                                 strict=False,
                                 allow_broad=False,
                             )
@@ -2333,6 +2361,15 @@ async def _process_search_and_send(token: str, chat_id: int, query: str) -> None
             if store:
                 # split reply_text into chunks (by lines) and save multiple pages
                 lines = (reply_text or "").splitlines()
+                # `reply_text` opens with the results header, but saved page
+                # bodies must hold rows only: every part is sent under its own
+                # header below. Keeping the header line duplicated it on
+                # part 1 and made total_results one larger than the real count.
+                try:
+                    if lines and header and lines[0].strip() == header.strip():
+                        lines = lines[1:]
+                except Exception:
+                    pass
                 # chunk by cumulative character size to avoid oversized pages
                 MAX_MSG = getattr(settings, "MAX_MSG", 4000)
                 CHUNK_CHAR_LIMIT = max(800, int(MAX_MSG - 200))
@@ -3136,17 +3173,26 @@ async def _send_markdown_full(
             store = None
         if store:
             try:
+                # The caller already built the exact header for this part
+                # ("Search: reading — 1065 results — part 2/22"), so it is stored
+                # as the page header instead of being baked into the body, and
+                # the real row count is recorded. Previously the body was saved
+                # under the query "__forced__" with no total, so every rendered
+                # page opened with "Search: __forced__ — 0 results".
                 try:
-                    full_md = (
-                        (header + "\n\n" + "\n".join(lines))
-                        if header
-                        else "\n".join(lines)
-                    )
+                    body_text = "\n".join(lines)
                 except Exception:
-                    full_md = "\n".join(lines)
-                # Save full content; auto-splitting handled by the store
+                    body_text = str(md_lines_or_text or "")
+                # Plain-text fallback below still sends the header with the body
+                full_md = (header + "\n\n" + body_text) if header else body_text
+                # Save the rows only; auto-splitting handled by the store
                 saved = await store.save_raw_page(
-                    "__forced__", full_md, tokens=[], created_by=None
+                    "",
+                    body_text,
+                    tokens=[],
+                    created_by=None,
+                    total_results=len(lines),
+                    page_header=(header or None),
                 )
                 pid = saved.get("page_id") if isinstance(saved, dict) else None
                 if pid:
@@ -4337,18 +4383,35 @@ async def public_page(request: Request, page_id: str):
         pass
 
     raw_query = page.get("query") or ""
+    if raw_query == "__forced__":
+        # Legacy pages saved before the real header/total were attached; the
+        # sentinel must never be shown to a reader.
+        raw_query = ""
     page_query = html.escape(raw_query)
     page_lang = resolve_lang(text=raw_query)
-    title = (
-        t(
+    # A stored page header is the exact header its caller built for this result
+    # set ("Search: reading — 1065 results — part 2/22"), so prefer it over
+    # regenerating one from query/total metadata. Otherwise a page saved
+    # without metadata rendered as "Search: __forced__ — 0 results".
+    page_header = (page.get("page_header") or "").strip()
+    if not page_header:
+        for _part in page.get("group_pages") or []:
+            if isinstance(_part, dict):
+                page_header = (_part.get("page_header") or "").strip()
+                if page_header:
+                    break
+    page_header = re.sub(r"^[\*_]+|[\*_]+$", "", page_header).strip()
+    if page_header:
+        title = page_header
+    elif page_query:
+        title = t(
             "results_header",
             query=page_query,
             total=page.get("total_results") or 0,
             lang=page_lang,
         )
-        if page_query
-        else t("results_title", page_lang)
-    )
+    else:
+        title = t("results_title", page_lang)
 
     # Render top links if present
     tlinks = page.get("top_links") or []
@@ -4547,6 +4610,31 @@ def _result_dedupe_key(doc: dict) -> str:
     return f"{doc.get('chat_id')}:{doc.get('message_id')}"
 
 
+# Atlas prefix (wildcard) clauses are optional. An index that rejects them must
+# not cost us Atlas search altogether, so a rejection disables them for the
+# process and later queries go straight to the text-only compound.
+_ATLAS_PREFIX_STATE = {"enabled": True}
+
+
+def _atlas_prefix_enabled() -> bool:
+    return bool(_ATLAS_PREFIX_STATE.get("enabled", True))
+
+
+def _atlas_prefix_rejected(exc: BaseException) -> bool:
+    """True when an Atlas error looks like the wildcard clause being unsupported."""
+    msg = str(exc or "").lower()
+    return any(
+        marker in msg
+        for marker in (
+            "wildcard",
+            "allowanalyzedfield",
+            "analyzed field",
+            "unknown operator",
+            "invalid operator",
+        )
+    )
+
+
 @app.get("/search")
 async def api_search(
     q: str = Query(..., min_length=1, max_length=128),
@@ -4625,6 +4713,16 @@ async def api_search(
     from app.services.search_utils import make_trigrams, trigram_similarity, TRIGRAM_MAX
 
     start = (page - 1) * per_page
+
+    # Candidate scan budget. The reported total must describe the same set the
+    # page is sliced from, so retrieval is bounded by this safety valve instead
+    # of a page-sized window that silently hid matches past row N. Override with
+    # API_SCAN_LIMIT; a request for a page beyond it still gets its rows.
+    try:
+        scan_limit = int(os.getenv("API_SCAN_LIMIT", "20000"))
+    except Exception:
+        scan_limit = 20000
+    scan_limit = max(scan_limit, start + int(per_page or 0) + 1)
 
     def _uri_uses_tls_local(uri: str) -> bool:
         if not uri:
@@ -4750,57 +4848,128 @@ async def api_search(
                 fuzzy_clause["text"]["fuzzy"] = {"maxEdits": 1, "prefixLength": 2}
             should.append(fuzzy_clause)
 
+            # Word-family prefixes: Atlas text search matches whole tokens, so
+            # "read" never surfaced "reading" without a wildcard clause. Low
+            # boost only - the tier filter below decides relevance. These
+            # clauses are optional: see the two-stage retry below.
+            should_text_only = list(should)
+            for _tok in family_prefix_terms(tokens):
+                if len(_tok) < 3:
+                    continue
+                should.append(
+                    {
+                        "wildcard": {
+                            "query": f"{_tok}*",
+                            "path": "title_tokens",
+                            "allowAnalyzedField": True,
+                            "score": {"boost": {"value": max(1.0, w_title * 0.4)}},
+                        }
+                    }
+                )
+                should.append(
+                    {
+                        "wildcard": {
+                            "query": f"*{_tok}*",
+                            "path": "filename",
+                            "allowAnalyzedField": True,
+                            "score": {"boost": {"value": max(1.0, w_fname * 0.4)}},
+                        }
+                    }
+                )
+            should_with_prefix = list(should)
+
             # minimumShouldMatch stays 1: multi-token queries like
             # "breaking bad season 3" must still surface docs matching only the
             # important title tokens (tier filtering happens in Python below).
             min_should = 1
 
-            search_stage = {
-                "$search": {
-                    "compound": {"should": should, "minimumShouldMatch": min_should}
+            stages = []
+            if _atlas_prefix_enabled() and should_with_prefix != should_text_only:
+                stages.append(
+                    {
+                        "$search": {
+                            "compound": {
+                                "should": should_with_prefix,
+                                "minimumShouldMatch": min_should,
+                            }
+                        }
+                    }
+                )
+            stages.append(
+                {
+                    "$search": {
+                        "compound": {
+                            "should": should_text_only,
+                            "minimumShouldMatch": min_should,
+                        }
+                    }
                 }
-            }
-
-            pipeline = [
-                search_stage,
-                {"$addFields": {"score": {"$meta": "searchScore"}}},
-            ]
-
-            # apply filters (thread_id) after searchStage
-            if thread_id is not None:
-                try:
-                    tid = int(thread_id)
-                    pipeline.append({"$match": {"message_thread_id": tid}})
-                except Exception:
-                    pass
+            )
 
             # projection stage: include requested projection fields and score
             proj_fields = {k: 1 for k in projection.keys()}
             proj_fields["score"] = 1
-            pipeline.append({"$project": proj_fields})
+            # Fetch the whole candidate set (up to the scan budget), not a
+            # page-sized window: `total` and the listed rows must agree.
+            atlas_window = scan_limit
 
-            # sort only: copies are merged and paged in Python below, so a
-            # page-sized window here would return fewer rows than requested
-            pipeline.append({"$sort": {"score": -1, "timestamp": -1}})
-            atlas_window = max(int(per_page) * 4, 200)
-            pipeline.append({"$limit": atlas_window})
-
-            docs = await coll.aggregate(pipeline).to_list(length=atlas_window)
-
-            # count total matches (separate, may be expensive)
-            try:
-                count_pipeline = [search_stage]
+            def _atlas_pipeline(stage):
+                pipe = [stage, {"$addFields": {"score": {"$meta": "searchScore"}}}]
+                # apply filters (thread_id) after searchStage
                 if thread_id is not None:
                     try:
-                        tid = int(thread_id)
-                        count_pipeline.append({"$match": {"message_thread_id": tid}})
+                        pipe.append({"$match": {"message_thread_id": int(thread_id)}})
                     except Exception:
                         pass
-                count_pipeline.append({"$count": "total"})
-                cnt = await coll.aggregate(count_pipeline).to_list(length=1)
-                total = int(cnt[0]["total"]) if cnt else 0
-            except Exception:
-                total = len(docs)
+                pipe.append({"$project": proj_fields})
+                # sort only: copies are merged and paged in Python below, so a
+                # page-sized window here would return fewer rows than requested
+                pipe.append({"$sort": {"score": -1, "timestamp": -1}})
+                pipe.append({"$limit": atlas_window})
+                return pipe
+
+            used_stage = None
+            for _idx, _stage in enumerate(stages):
+                try:
+                    docs = await coll.aggregate(_atlas_pipeline(_stage)).to_list(
+                        length=atlas_window
+                    )
+                    used_stage = _stage
+                    break
+                except Exception as _exc:
+                    docs = []
+                    if _idx == 0 and len(stages) > 1:
+                        # the prefix stage is optional: drop it instead of
+                        # losing Atlas search altogether
+                        if _atlas_prefix_rejected(_exc):
+                            _ATLAS_PREFIX_STATE["enabled"] = False
+                        logger.warning(
+                            "api_search: Atlas prefix stage failed ({}); retrying text-only",
+                            _exc,
+                        )
+                        continue
+                    logger.exception(
+                        "api_search: atlas aggregation failed, falling back to legacy search"
+                    )
+                    break
+
+            # count total matches (separate, may be expensive)
+            if used_stage is not None:
+                try:
+                    count_pipeline = [used_stage]
+                    if thread_id is not None:
+                        try:
+                            tid = int(thread_id)
+                            count_pipeline.append(
+                                {"$match": {"message_thread_id": tid}}
+                            )
+                        except Exception:
+                            pass
+                    count_pipeline.append({"$count": "total"})
+                    cnt = await coll.aggregate(count_pipeline).to_list(length=1)
+                    total = int(cnt[0]["total"]) if cnt else 0
+                except Exception:
+                    total = len(docs)
         except Exception:
             logger.exception(
                 "api_search: atlas aggregation failed, falling back to legacy search"
@@ -4823,7 +4992,9 @@ async def api_search(
                     }
                 except Exception:
                     pass
-            docs = await coll.find(candidate_filter, projection).to_list(length=5000)
+            docs = await coll.find(candidate_filter, projection).to_list(
+                length=scan_limit
+            )
 
             def _merge_extra(extra_docs):
                 seen = set()
@@ -4843,8 +5014,10 @@ async def api_search(
                         seen.add(k)
                         docs.append(d)
 
-            # broaden: prefix candidates (autocomplete) when exact hits are scarce
-            if not strict and len(docs) < MIN_RESULTS:
+            # broaden: prefix candidates (autocomplete). Always run: gating this on
+            # "few exact hits" dropped the other word forms (and the total) from
+            # any query that already had plenty of exact rows.
+            if not strict:
                 or_clauses = []
                 # one regex per token AND per folded word form, so "create"
                 # also broadens to "created"/"creating"/"creation"
@@ -4869,7 +5042,37 @@ async def api_search(
                         p_filter = {"$and": [p_filter, {"message_thread_id": tid}]}
                     except Exception:
                         pass
-                _merge_extra(await coll.find(p_filter, projection).to_list(length=5000))
+                _merge_extra(
+                    await coll.find(p_filter, projection).to_list(length=scan_limit)
+                )
+
+            # broaden: word-family prefixes ("read" -> "reading"/"reader").
+            # Always run: the "scarce results" gate meant a library with
+            # thousands of exact "read" hits never retrieved the rest of the
+            # family at all. The filename clause also covers stale stored
+            # title_tokens and compound names like "my_reading_list".
+            if not strict:
+                pre_clauses = [
+                    {
+                        "title_tokens": {
+                            "$elemMatch": {"$regex": pattern, "$options": "i"}
+                        }
+                    }
+                    for pattern in prefix_patterns(tokens)
+                ] + [
+                    {"filename": {"$regex": pattern, "$options": "i"}}
+                    for pattern in prefix_patterns(tokens, boundary=True)
+                ]
+                pre_filter = {"$or": pre_clauses}
+                if thread_id is not None:
+                    try:
+                        tid = int(thread_id)
+                        pre_filter = {"$and": [pre_filter, {"message_thread_id": tid}]}
+                    except Exception:
+                        pass
+                _merge_extra(
+                    await coll.find(pre_filter, projection).to_list(length=scan_limit)
+                )
 
             # broaden: 1-edit trigram tolerance when still scarce
             if not strict and len(docs) < MIN_RESULTS and q_tris:
@@ -4880,7 +5083,9 @@ async def api_search(
                         t_filter = {"$and": [t_filter, {"message_thread_id": tid}]}
                     except Exception:
                         pass
-                _merge_extra(await coll.find(t_filter, projection).to_list(length=5000))
+                _merge_extra(
+                    await coll.find(t_filter, projection).to_list(length=scan_limit)
+                )
         except Exception as exc:
             logger.exception("api_search: DB candidate query failed: {}", exc)
             docs = []
@@ -4947,23 +5152,12 @@ async def api_search(
     for doc in results:
         merged.setdefault(_result_dedupe_key(doc), doc)
     results = list(merged.values())
-    total = len(results)
+    results = promote_family_matches(results, tokens)
 
-    start = (page - 1) * per_page
-    end = start + per_page
-    page_results = results[start:end]
-
-    log_search_quality(
-        q,
-        tokens,
-        results,
-        min_tier,
-        source="api",
-        fuzzy_used=min_tier == "typo",
-        broad_used=min_tier == "broad" or allow_broad,
-    )
-
-    # Respect INDEX_VIDEO env: if false, filter out video-like docs
+    # Respect INDEX_VIDEO env: if false, drop video-like docs from the WHOLE
+    # result set. Filtering the already-paginated page made `total` equal to
+    # the page size, so the bot always reported "50 results" and never fetched
+    # the rest.
     try:
         allow_video = os.getenv("INDEX_VIDEO", "true").lower() in ("1", "true", "yes")
     except Exception:
@@ -4990,8 +5184,23 @@ async def api_search(
                 pass
             return False
 
-        page_results = [r for r in page_results if not _is_video_doc(r)]
-        total = len(page_results)
+        results = [r for r in results if not _is_video_doc(r)]
+
+    total = len(results)
+
+    start = (page - 1) * per_page
+    end = start + per_page
+    page_results = results[start:end]
+
+    log_search_quality(
+        q,
+        tokens,
+        results,
+        min_tier,
+        source="api",
+        fuzzy_used=min_tier == "typo",
+        broad_used=min_tier == "broad" or allow_broad,
+    )
 
     # Support markdown output for easy export/pasting into chats
     if str(output_format).lower() in ("md", "markdown"):
@@ -5385,9 +5594,34 @@ async def search_stream(
         fuzzy_clause["text"]["fuzzy"] = {"maxEdits": 1, "prefixLength": 2}
     should.append(fuzzy_clause)
 
-    search_stage = {
-        "$search": {"compound": {"should": should, "minimumShouldMatch": 1}}
-    }
+    # Word-family prefixes, same rule as api_search: whole-token text search
+    # alone never returns "reading" for "read". Optional - the probe below
+    # falls back to the text-only compound when the index rejects wildcards.
+    should_text_only = list(should)
+    for _tok in family_prefix_terms(tokenize_query(q)):
+        if len(_tok) < 3:
+            continue
+        should.append(
+            {
+                "wildcard": {
+                    "query": f"{_tok}*",
+                    "path": "title_tokens",
+                    "allowAnalyzedField": True,
+                    "score": {"boost": {"value": max(1.0, w_title * 0.4)}},
+                }
+            }
+        )
+        should.append(
+            {
+                "wildcard": {
+                    "query": f"*{_tok}*",
+                    "path": "filename",
+                    "allowAnalyzedField": True,
+                    "score": {"boost": {"value": max(1.0, w_fname * 0.4)}},
+                }
+            }
+        )
+    should_with_prefix = list(should)
 
     proj_fields = {
         "chat_id": 1,
@@ -5409,12 +5643,40 @@ async def search_stream(
         "path": 1,
     }
 
-    pipeline = [
-        search_stage,
-        {"$addFields": {"score": {"$meta": "searchScore"}}},
-        {"$project": proj_fields},
-    ]
-    if thread_id is not None:
+    stages = []
+    if _atlas_prefix_enabled() and should_with_prefix != should_text_only:
+        stages.append(
+            {
+                "$search": {
+                    "compound": {
+                        "should": should_with_prefix,
+                        "minimumShouldMatch": 1,
+                    }
+                }
+            }
+        )
+    stages.append(
+        {"$search": {"compound": {"should": should_text_only, "minimumShouldMatch": 1}}}
+    )
+
+    def _stream_pipeline(stage):
+        pipe = [
+            stage,
+            {"$addFields": {"score": {"$meta": "searchScore"}}},
+            {"$project": proj_fields},
+        ]
+        if thread_id is not None:
+            try:
+                pipe.append({"$match": {"message_thread_id": int(thread_id)}})
+            except Exception:
+                pass
+        pipe.append({"$sort": {"score": -1, "timestamp": -1}})
+        return pipe
+
+    # Probe before streaming: an unsupported clause must fail here, not after
+    # the response has already started.
+    cursor = None
+    for _idx, _stage in enumerate(stages):
         try:
             await coll.aggregate(_stream_pipeline(_stage) + [{"$limit": 1}]).to_list(
                 length=1
@@ -5444,39 +5706,30 @@ async def search_stream(
         try:
             docs = [doc async for doc in cursor]
         except Exception:
-            pass
+            logger.exception("search_stream: failed to read Atlas results")
+            docs = []
 
-    pipeline.append({"$sort": {"score": -1, "timestamp": -1}})
-
-    try:
-        cursor = coll.aggregate(pipeline, allowDiskUse=True, batchSize=per_batch)
-
-        async def gen():
-            async for doc in cursor:
-                # normalize fields for JSON streaming
-                try:
-                    if "_id" in doc:
-                        doc["_id"] = str(doc["_id"])
-                    ts = doc.get("timestamp")
-                    if isinstance(ts, datetime):
-                        doc["timestamp"] = ts.isoformat()
-                except Exception:
-                    pass
-                # yield as newline-delimited JSON
-                yield json.dumps(doc, default=str) + "\n"
-
-        return StreamingResponse(gen(), media_type="application/x-ndjson")
-    except Exception:
+    if not docs:
         # Fallback to legacy candidate find if $search isn't available
         try:
-            from app.services.search_utils import make_trigrams, TRIGRAM_MAX
-
             q_tris = make_trigrams(q or "", TRIGRAM_MAX)
             stream_tokens = tokenize_query(q)
             candidate_filter = {
                 "$or": [
                     {"title_tokens": {"$in": stream_tokens}},
                     {"trigrams": {"$in": q_tris}},
+                ]
+                + [
+                    {
+                        "title_tokens": {
+                            "$elemMatch": {"$regex": pattern, "$options": "i"}
+                        }
+                    }
+                    for pattern in prefix_patterns(stream_tokens)
+                ]
+                + [
+                    {"filename": {"$regex": pattern, "$options": "i"}}
+                    for pattern in prefix_patterns(stream_tokens, boundary=True)
                 ]
             }
             if thread_id is not None:
@@ -5491,3 +5744,53 @@ async def search_stream(
             docs = [doc async for doc in coll.find(candidate_filter, proj_fields)]
         except Exception:
             raise HTTPException(status_code=500, detail="Search streaming failed")
+
+    # Rank exactly like /search so every search surface agrees: the whole
+    # word family counts as one merged result set, copies collapse.
+    try:
+        q_tris = make_trigrams(q or "", TRIGRAM_MAX)
+    except Exception:
+        q_tris = []
+    stream_tokens = tokenize_query(q)
+    classified = []
+    for doc in docs:
+        try:
+            match = classify_match(q, stream_tokens, doc, q_tris)
+            if match.tier == NONE_TIER:
+                continue
+            doc["_tier"] = match.tier
+            doc["_score"] = compute_search_score(doc, stream_tokens, q, match, q_tris)
+            classified.append(doc)
+        except Exception:
+            continue
+    min_tier = resolve_min_tier(classified)
+    accepted = [
+        d for d in classified if accepts_tier(d.get("_tier", NONE_TIER), min_tier)
+    ]
+    accepted.sort(
+        key=lambda r: (
+            tier_priority(r.get("_tier")),
+            r.get("_score", 0.0),
+            r.get("timestamp"),
+        ),
+        reverse=True,
+    )
+    merged = {}
+    for doc in accepted:
+        merged.setdefault(_result_dedupe_key(doc), doc)
+    results = list(merged.values())
+    results = promote_family_matches(results, stream_tokens)
+
+    async def gen():
+        for doc in results:
+            try:
+                if "_id" in doc:
+                    doc["_id"] = str(doc["_id"])
+                ts = doc.get("timestamp")
+                if isinstance(ts, datetime):
+                    doc["timestamp"] = ts.isoformat()
+            except Exception:
+                pass
+            yield json.dumps(doc, default=str) + "\n"
+
+    return StreamingResponse(gen(), media_type="application/x-ndjson")

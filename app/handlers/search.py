@@ -1,6 +1,7 @@
 from pyrogram import Client, filters
 from pyrogram.types import Message, CallbackQuery, InlineKeyboardMarkup
 import asyncio
+import os
 import time
 import uuid
 
@@ -255,21 +256,40 @@ _COOLDOWN = settings.SEARCH_COOLDOWN
 # 🔥 STREAM SEARCH (NO LAG)
 # -------------------------------
 async def iter_results(file_index, tokens, query, batch=100):
-    page = 1
+    """Yield every ranked match, building the ranking only once.
+
+    Asking for page 1, 2, 3, ... re-ran the whole search per page, and each
+    run only scanned a capped candidate window, so the "N results" header and
+    the paging both described an arbitrary slice of the library. `rank_all`
+    returns the complete set, so the count is the real total.
+    `batch` is kept for callers that still pass it.
+    """
     try:
         allow_video = os.getenv("INDEX_VIDEO", "true").lower() in ("1", "true", "yes")
     except Exception:
         allow_video = True
-    while True:
-        # pass extension filter when configured to hide videos
-        filters = None
-        if not allow_video:
-            filters = {
-                "extension": {
-                    "$nin": ["mp4", "mkv", "webm", "mov", "avi", "flv", "mpeg", "mpg"]
-                }
+    # pass extension filter when configured to hide videos
+    filters = None
+    if not allow_video:
+        filters = {
+            "extension": {
+                "$nin": ["mp4", "mkv", "webm", "mov", "avi", "flv", "mpeg", "mpg"]
             }
+        }
 
+    rank_all = getattr(file_index, "rank_all", None)
+    if rank_all is not None:
+        try:
+            ranked = rank_all(tokens, query=query, filters=filters)
+        except Exception:
+            logger.exception("iter_results: rank_all failed, falling back to paging")
+        else:
+            for r in ranked.get("results", []):
+                yield r
+            return
+
+    page = 1
+    while True:
         res = file_index.search_with_ranking(
             tokens,
             query=query,
